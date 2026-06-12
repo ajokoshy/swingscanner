@@ -1,44 +1,44 @@
 import streamlit as st
 from data_fetcher import DataPipeline
-from engine_pro import ScoringEngine
+from engine_pro import InstitutionalEngine
 from trading_manager import RiskManager
-from database_manager import init_db, SessionLocal, ProScanResult # Reusing your previous DB setup
+from database_manager import init_db, SessionLocal, ProScanResult
+from datetime import datetime
 
-st.set_page_config(page_title="NSE Pro Swing", layout="wide")
+init_db()
 
-def analyze_stock(symbol):
-    # 1. Fetch
-    df = DataPipeline.get_clean_data(symbol)
-    if df is None:
-        return st.error(f"Ineligible Stock: {symbol} (Low Liquidity or Insufficient Data)")
+st.title("🛡️ Institutional NSE Swing Platform")
 
-    # 2. Process
-    df = ScoringEngine.apply_indicators(df)
-    score, factors = ScoringEngine.calculate_score(df)
+if st.sidebar.button("Run NSE500 Full Scan"):
+    symbols = DataPipeline.get_nse500_symbols()
+    mkt_df = DataPipeline.fetch_market_data("^NSEI")
+    mid_df = DataPipeline.fetch_market_data("^NSEMDCP50")
     
-    # 3. Setup
-    setup = RiskManager.get_trade_setup(df)
+    db = SessionLocal()
+    progress = st.progress(0)
     
-    if setup:
-        col1, col2 = st.columns(2)
-        with col1:
-            st.metric("Institutional Score", f"{score}/100")
-            st.write(f"**Classification:** {'ELITE' if score >= 85 else 'STRONG' if score >= 70 else 'MONITOR'}")
-            for f in factors: st.write(f"✅ {f}")
+    for i, sym in enumerate(symbols[:100]): # Limited to 100 for speed on Render
+        df = DataPipeline.fetch_market_data(sym)
+        if df is not None and len(df) > 200:
+            engine = InstitutionalEngine(df, mkt_df, mid_df)
+            score, setup_type, explanation = engine.get_contextual_score()
             
-        with col2:
-            st.subheader("Trade Setup (ATR-Adjusted)")
-            st.write(f"**Entry:** ₹{setup['entry']}")
-            st.write(f"**Stop Loss:** ₹{setup['stop_loss']} (Vol: {setup['atr']})")
-            st.write(f"**Target 1 (2R):** ₹{setup['target1']}")
-            st.write(f"**Target 2 (3R):** ₹{setup['target2']}")
-            st.write(f"**Target 3 (5R):** ₹{setup['target3']}")
-            st.info(f"Risk Reward Ratio: {setup['rr']}")
-    else:
-        st.warning("No valid trade setup found for this stock.")
+            if score >= 70:
+                levels = RiskManager.get_levels(df)
+                if levels:
+                    # 8. Check for existing scan to avoid duplicates
+                    existing = db.query(ProScanResult).filter_by(symbol=sym, scan_date=datetime.utcnow().date()).first()
+                    if not existing:
+                        res = ProScanResult(
+                            symbol=sym, score=score, setup_type=setup_type,
+                            market_regime="BULLISH" if score > 70 else "NEUTRAL",
+                            entry=levels['entry'], stop_loss=levels['stop_loss'],
+                            target_1=levels['t1'], target_2=levels['t2'], target_3=levels['t3'],
+                            risk_reward=levels['rr'], explanation=explanation
+                        )
+                        db.add(res)
+        progress.progress((i + 1) / 100)
+    db.commit()
+    st.success("NSE500 Scan Complete.")
 
-# UI Logic
-st.title("🛡️ Production NSE Swing Engine")
-sym = st.text_input("Enter Symbol", "RELIANCE")
-if sym:
-    analyze_stock(sym)
+# Display Logic using ProScanResult...
