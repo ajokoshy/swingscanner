@@ -1,6 +1,6 @@
-streamlit
-pandas
-pandas_ta
+streamlit==1.32.0
+pandas==2.2.0
+pandas_ta==0.3.14b0
 yfinance
 sqlalchemy
 psycopg2-binary
