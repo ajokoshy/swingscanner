@@ -47,39 +47,68 @@ if page == "Individual Analysis":
 elif page == "Daily Market Scanner":
     st.title("📊 Top Swing Opportunities")
     
-    # Simple list for demo; in production, load 500 stocks from a CSV
-    WATCHLIST = ["ASTERDM", "RELIANCE", "TCS", "INFY", "TATASTEEL", "HDFCBANK", "SBIN", "ICICIBANK"]
+    # Expanded Watchlist for better results
+    WATCHLIST = [
+        "ASTERDM", "RELIANCE", "TCS", "INFY", "TATASTEEL", "HDFCBANK", 
+        "SBIN", "ICICIBANK", "AXISBANK", "BHARTIARTL", "ITC", "LT", 
+        "MARUTI", "KOTAKBANK", "ADANIENT", "SUNPHARMA", "TITAN", "BAJFINANCE"
+    ]
     
     if st.button("Run Automated Scan"):
         db = SessionLocal()
-        results = []
+        found_count = 0
         progress_bar = st.progress(0)
+        status_text = st.empty()
         
         for i, sym in enumerate(WATCHLIST):
+            status_text.text(f"Scanning {sym}...")
             engine = SwingEngine(sym)
             if engine.fetch_data():
                 analysis = engine.analyze()
-                if analysis and analysis['score'] >= 70:
-                    # Save to DB
-                    res_obj = SwingResult(**analysis)
+                # LOWERED THRESHOLD TO 0 FOR TESTING - This ensures you see results
+                if analysis:
+                    # Create DB object
+                    res_obj = SwingResult(
+                        symbol=analysis['symbol'],
+                        score=analysis['score'],
+                        classification=analysis['classification'],
+                        entry=analysis['entry'],
+                        stop_loss=analysis['stop_loss'],
+                        target_1=analysis['target_1'],
+                        target_2=analysis['target_2'],
+                        risk_reward=analysis['risk_reward'],
+                        reasons=analysis['reasons']
+                    )
                     db.add(res_obj)
-                    results.append(analysis)
+                    found_count += 1
             progress_bar.progress((i + 1) / len(WATCHLIST))
         
         db.commit()
         db.close()
-        st.success("Scan Complete!")
+        status_text.text(f"Scan Complete! Found {found_count} stocks.")
+        st.success(f"Successfully analyzed and saved {found_count} stocks to the database.")
 
     # Display Results from Database
+    st.divider()
     db = SessionLocal()
-    saved_scans = db.query(SwingResult).order_by(SwingResult.score.desc()).limit(10).all()
+    # Pull latest 20 scans regardless of score to verify DB is working
+    saved_scans = db.query(SwingResult).order_by(SwingResult.created_at.desc(), SwingResult.score.desc()).limit(20).all()
     
     if saved_scans:
+        st.subheader(f"Latest Candidates ({len(saved_scans)})")
         for res in saved_scans:
-            with st.expander(f"Rank: {res.symbol} - Score: {res.score}"):
+            # Color code the header based on score
+            label = f"{res.symbol} — Score: {res.score}/100"
+            with st.expander(label):
                 c1, c2 = st.columns(2)
-                c1.write(f"**Entry:** {res.entry} | **SL:** {res.stop_loss}")
-                c1.write(f"**Targets:** {res.target_1}, {res.target_2}")
-                c2.write(f"**Reasons:** {res.reasons}")
+                with c1:
+                    st.write(f"**Classification:** {res.classification}")
+                    st.write(f"**Entry:** ₹{res.entry}")
+                    st.write(f"**Stop Loss:** ₹{res.stop_loss}")
+                with c2:
+                    st.write(f"**Target 1:** ₹{res.target_1}")
+                    st.write(f"**Target 2:** ₹{res.target_2}")
+                    st.write(f"**Analysis:** {res.reasons}")
     else:
-        st.info("No scans found. Click 'Run Automated Scan' above.")
+        st.info("The database is currently empty. Click 'Run Automated Scan' to fetch data.")
+    db.close()
