@@ -5,123 +5,131 @@ from trading_manager import RiskManager
 from database_manager import init_db, SessionLocal, ProScanResult
 from datetime import datetime
 
+# Initialize DB Tables
 init_db()
 
-st.title("🛡️ Institutional NSE Swing Platform")
+st.set_page_config(page_title="🛡️ Institutional NSE Swing Platform", layout="wide")
 
-if st.sidebar.button("Run NSE500 Full Scan"):
+# --- SIDEBAR: SCANNER CONTROL ---
+st.sidebar.title("Trading Controls")
+if st.sidebar.button("🚀 Run Full NSE500 Scan"):
     symbols = DataPipeline.get_nse500_symbols()
     
-    # 1. Fetch Regime Data
+    # 1. Fetch Regime Data (Indices)
+    # Note: No .NS for indices
     mkt_df = DataPipeline.fetch_market_data("^NSEI")
     mid_df = DataPipeline.fetch_market_data("^NSEMDCP50")
     
-    if mkt_df is None or mid_df is None:
-        st.error("Could not fetch Market Regime data (Nifty Indices). Scan aborted.")
+    if mkt_df is None:
+        st.error("Market data unavailable. Please try again.")
     else:
-        # --- EVERYTHING BELOW MUST BE INDENTED ---
-        db = SessionLocal()
-        progress = st.progress(0)
-        status_text = st.empty()
-        found_count = 0
+        st.info(f"Downloading data for {len(symbols)} stocks...")
+        all_data = DataPipeline.fetch_batch_data(symbols)
         
-        # Limit symbols for testing speed, or remove [:100] for full NSE500
-        scan_list = symbols[:100] 
-        
-        for i, sym in enumerate(scan_list):
-            status_text.text(f"Scanning {sym} ({i+1}/{len(scan_list)})...")
-            df = DataPipeline.fetch_market_data(sym)
-            
-            if df is not None and len(df) > 200:
-                # 2. Institutional Scoring
-                engine = InstitutionalEngine(df, mkt_df, mid_df)
-                score, setup_type, explanation = engine.get_contextual_score()
-                
-                # 3. Quality Threshold
-                if score >= 70:
-                    # 4. Risk & Setup Logic (ATR Bug fixed here)
-                    levels = RiskManager.get_levels(df)
+        if all_data is None:
+            st.error("Batch download failed.")
+        else:
+            db = SessionLocal()
+            progress = st.progress(0)
+            status_text = st.empty()
+            found_count = 0
+            today = datetime.utcnow().date()
+
+            # 2. Process Data Locally (Fast)
+            for i, sym in enumerate(symbols):
+                ticker_sym = f"{sym}.NS"
+                try:
+                    # Extract individual stock from batch
+                    df = all_data[ticker_sym].dropna()
                     
-                    if levels:
-                        # 5. Prevent Duplicates for the same day
-                        today = datetime.utcnow().date()
-                        existing = db.query(ProScanResult).filter_by(
-                            symbol=sym, 
-                            scan_date=today
-                        ).first()
+                    if len(df) > 200:
+                        # Institutional Analysis
+                        engine = InstitutionalEngine(df, mkt_df, mid_df)
+                        score, setup_type, explanation = engine.get_contextual_score()
                         
-                        if not existing:
-                            res = ProScanResult(
-                                symbol=sym,
-                                score=score,
-                                setup_type=setup_type,
-                                market_regime="BULLISH" if score > 75 else "NEUTRAL",
-                                entry=levels['entry'],
-                                stop_loss=levels['stop_loss'],
-                                target_1=levels['t1'],
-                                target_2=levels['t2'],
-                                target_3=levels['t3'],
-                                risk_reward=levels['rr'],
-                                explanation=explanation
-                            )
-                            db.add(res)
-                            found_count += 1
+                        # Apply Institutional Threshold
+                        if score >= 70:
+                            # ATR Risk Check
+                            levels = RiskManager.get_levels(df)
+                            
+                            if levels:
+                                # Prevent Duplicate Entry for Today
+                                existing = db.query(ProScanResult).filter_by(
+                                    symbol=sym, scan_date=today
+                                ).first()
+                                
+                                if not existing:
+                                    res = ProScanResult(
+                                        symbol=sym,
+                                        score=score,
+                                        setup_type=setup_type,
+                                        market_regime="BULLISH" if score > 75 else "NEUTRAL",
+                                        entry=levels['entry'],
+                                        stop_loss=levels['stop_loss'],
+                                        target_1=levels['t1'],
+                                        target_2=levels['t2'],
+                                        target_3=levels['t3'],
+                                        risk_reward=levels['rr'],
+                                        explanation=explanation
+                                    )
+                                    db.add(res)
+                                    found_count += 1
+                except Exception:
+                    continue # Skip tickers with corrupted data
+                
+                # Update UI
+                if i % 10 == 0:
+                    status_text.text(f"Analyzing {sym}... ({i+1}/{len(symbols)})")
+                    progress.progress((i + 1) / len(symbols))
             
-            # Update UI Progress
-            progress.progress((i + 1) / len(scan_list))
-        
-        db.commit()
-        db.close()
-        status_text.text(f"Scan Complete! Found {found_count} setups.")
-        st.success(f"Analyzed {len(scan_list)} stocks. Check results below.")
-# Display Logic using ProScanResult...
-# --- DATABASE DISPLAY LOGIC ---
-st.divider()
-st.subheader("🎯 Active Institutional Setups")
+            db.commit()
+            db.close()
+            status_text.text(f"Scan Complete! Found {found_count} setups.")
+            st.success(f"Full NSE500 Scan Successful.")
+
+# --- MAIN UI: DASHBOARD ---
+st.title("🛡️ Institutional NSE Swing Platform")
 
 db = SessionLocal()
 try:
-    # Query the latest scans from the database
-    # We sort by date (newest first) and then by score (highest first)
+    # Pull current setups (Latest Scans)
     today = datetime.utcnow().date()
     results = db.query(ProScanResult).filter(
         ProScanResult.scan_date == today
     ).order_by(ProScanResult.score.desc()).all()
 
     if not results:
-        # Fallback: Show yesterday's results if today's scan hasn't run
-        st.info("No scans found for today. Showing most recent historical results.")
+        st.info("No active setups for today. Showing latest available results.")
         results = db.query(ProScanResult).order_by(
             ProScanResult.scan_date.desc(), 
             ProScanResult.score.desc()
-        ).limit(10).all()
+        ).limit(15).all()
 
     if results:
+        st.subheader(f"🎯 Top Opportunities ({len(results)})")
         for res in results:
-            # Create a professional card for each stock
-            with st.expander(f"⭐ {res.symbol} | Score: {res.score}/100 | {res.setup_type}"):
-                col1, col2, col3 = st.columns([1, 1, 1.5])
-                
-                with col1:
+            # Color coding for ELITE setups
+            header = f"⭐ {res.symbol} | Score: {res.score}/100 | {res.setup_type}"
+            if res.score >= 85: header = "🔥 [ELITE] " + header
+            
+            with st.expander(header):
+                c1, c2, c3 = st.columns([1, 1, 1.5])
+                with c1:
                     st.write("**Trade Levels**")
-                    st.write(f"Entry: `₹{res.entry}`")
-                    st.write(f"Stop Loss: `₹{res.stop_loss}`")
-                    st.write(f"Risk Reward: `{res.risk_reward}`")
-                
-                with col2:
+                    st.code(f"Entry: ₹{res.entry}")
+                    st.code(f"Stop:  ₹{res.stop_loss}")
+                    st.write(f"**R:R:** {res.risk_reward}")
+                with c2:
                     st.write("**Targets**")
-                    st.success(f"T1: ₹{res.target_1}")
-                    st.success(f"T2: ₹{res.target_2}")
-                    st.success(f"T3: ₹{res.target_3}")
-                
-                with col3:
-                    st.write("**Institutional Analysis**")
-                    # Split the explanation string back into clean bullet points
+                    st.success(f"Target 1: ₹{res.target_1}")
+                    st.success(f"Target 2: ₹{res.target_2}")
+                    st.success(f"Target 3: ₹{res.target_3}")
+                with c3:
+                    st.write("**Analysis Factors**")
                     for point in res.explanation.split(" | "):
-                        st.write(f"🔹 {point}")
-                    st.caption(f"Scan Date: {res.scan_date} | Regime: {res.market_regime}")
+                        st.write(f"✅ {point}")
+                    st.caption(f"Scanned: {res.scan_date} | Regime: {res.market_regime}")
     else:
-        st.warning("No setups found in database. Please run a 'Full Scan' from the sidebar.")
-
+        st.warning("Database is empty. Run a 'Full Scan' from the sidebar to populate.")
 finally:
     db.close()
