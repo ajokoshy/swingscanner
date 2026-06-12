@@ -11,9 +11,15 @@ st.title("🛡️ Institutional NSE Swing Platform")
 
 if st.sidebar.button("Run NSE500 Full Scan"):
     symbols = DataPipeline.get_nse500_symbols()
-    mkt_df = DataPipeline.fetch_market_data("^NSEI")
-    mid_df = DataPipeline.fetch_market_data("^NSEMDCP50")
     
+    # Correct tickers for Yahoo Finance Indices
+    mkt_df = DataPipeline.fetch_market_data("^NSEI")       # Nifty 50
+    mid_df = DataPipeline.fetch_market_data("^NSEMDCP50") # Nifty Midcap 50
+    
+    if mkt_df is None or mid_df is None:
+        st.error("Could not fetch Market Regime data (Nifty Indices). Scan aborted.")
+    else:
+        
     db = SessionLocal()
     progress = st.progress(0)
     
