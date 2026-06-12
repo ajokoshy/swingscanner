@@ -16,9 +16,13 @@ class InstitutionalEngine:
         df['vol_sma'] = ta.sma(df['Volume'], length=20)
         return df
 
-    def get_contextual_score(self):
-        self.df = self.calculate_indicators(self.df)
-        self.mkt = self.calculate_indicators(self.mkt)
+def get_contextual_score(self):
+    # Recalculate to ensure everything is fresh
+    self.df = self.calculate_indicators(self.df)
+    self.mkt = self.calculate_indicators(self.mkt)
+    
+    if self.df.empty or self.mkt.empty:
+        return 0, "Error", "Insufficient Data"
         
         last = self.df.iloc[-1]
         mkt_last = self.mkt.iloc[-1]
