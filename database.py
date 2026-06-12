@@ -1,0 +1,31 @@
+import os
+from sqlalchemy import create_engine, Column, String, Float, Integer, DateTime, Text
+from sqlalchemy.ext.declarative import declarative_base
+from sqlalchemy.orm import sessionmaker
+from datetime import datetime
+
+# Use SQLite locally, PostgreSQL on Render
+DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./nse_swing.db")
+if DATABASE_URL.startswith("postgres://"):
+    DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
+
+engine = create_engine(DATABASE_URL)
+SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+Base = declarative_base()
+
+class SwingResult(Base):
+    __tablename__ = "swing_results"
+    id = Column(Integer, primary_key=True, index=True)
+    symbol = Column(String, index=True)
+    score = Column(Integer)
+    classification = Column(String)
+    entry = Column(Float)
+    stop_loss = Column(Float)
+    target_1 = Column(Float)
+    target_2 = Column(Float)
+    risk_reward = Column(String)
+    reasons = Column(Text)  # Saved as comma-separated string
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+def init_db():
+    Base.metadata.create_all(bind=engine)
