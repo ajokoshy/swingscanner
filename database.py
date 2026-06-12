@@ -1,23 +1,33 @@
 import os
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, Column, String, Float, Integer, DateTime, Text
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
+from datetime import datetime
 
-# 1. Get the URL from environment variable
-DATABASE_URL = os.getenv("DATABASE_URL")
-
-# 2. Fix Neon/Heroku/Render prefix: SQLAlchemy requires 'postgresql://' not 'postgres://'
-if DATABASE_URL and DATABASE_URL.startswith("postgres://"):
+# Neon/Postgres URL handling
+DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./nse_swing.db")
+if DATABASE_URL.startswith("postgres://"):
     DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
 
-# 3. Create the engine
-# 'pool_pre_ping' is highly recommended for serverless DBs like Neon
-engine = create_engine(
-    DATABASE_URL, 
-    pool_pre_ping=True
-)
-
+engine = create_engine(DATABASE_URL, pool_pre_ping=True)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
 
-# ... rest of your SwingResult class remains the same ...
+# The Table definition
+class SwingResult(Base):
+    __tablename__ = "swing_results"
+    id = Column(Integer, primary_key=True, index=True)
+    symbol = Column(String, index=True)
+    score = Column(Integer)
+    classification = Column(String)
+    entry = Column(Float)
+    stop_loss = Column(Float)
+    target_1 = Column(Float)
+    target_2 = Column(Float)
+    risk_reward = Column(String)
+    reasons = Column(Text)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+# THIS IS THE MISSING FUNCTION THAT CAUSED YOUR ERROR
+def init_db():
+    Base.metadata.create_all(bind=engine)
