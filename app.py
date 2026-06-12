@@ -75,3 +75,53 @@ if st.sidebar.button("Run NSE500 Full Scan"):
         status_text.text(f"Scan Complete! Found {found_count} setups.")
         st.success(f"Analyzed {len(scan_list)} stocks. Check results below.")
 # Display Logic using ProScanResult...
+# --- DATABASE DISPLAY LOGIC ---
+st.divider()
+st.subheader("🎯 Active Institutional Setups")
+
+db = SessionLocal()
+try:
+    # Query the latest scans from the database
+    # We sort by date (newest first) and then by score (highest first)
+    today = datetime.utcnow().date()
+    results = db.query(ProScanResult).filter(
+        ProScanResult.scan_date == today
+    ).order_by(ProScanResult.score.desc()).all()
+
+    if not results:
+        # Fallback: Show yesterday's results if today's scan hasn't run
+        st.info("No scans found for today. Showing most recent historical results.")
+        results = db.query(ProScanResult).order_by(
+            ProScanResult.scan_date.desc(), 
+            ProScanResult.score.desc()
+        ).limit(10).all()
+
+    if results:
+        for res in results:
+            # Create a professional card for each stock
+            with st.expander(f"⭐ {res.symbol} | Score: {res.score}/100 | {res.setup_type}"):
+                col1, col2, col3 = st.columns([1, 1, 1.5])
+                
+                with col1:
+                    st.write("**Trade Levels**")
+                    st.write(f"Entry: `₹{res.entry}`")
+                    st.write(f"Stop Loss: `₹{res.stop_loss}`")
+                    st.write(f"Risk Reward: `{res.risk_reward}`")
+                
+                with col2:
+                    st.write("**Targets**")
+                    st.success(f"T1: ₹{res.target_1}")
+                    st.success(f"T2: ₹{res.target_2}")
+                    st.success(f"T3: ₹{res.target_3}")
+                
+                with col3:
+                    st.write("**Institutional Analysis**")
+                    # Split the explanation string back into clean bullet points
+                    for point in res.explanation.split(" | "):
+                        st.write(f"🔹 {point}")
+                    st.caption(f"Scan Date: {res.scan_date} | Regime: {res.market_regime}")
+    else:
+        st.warning("No setups found in database. Please run a 'Full Scan' from the sidebar.")
+
+finally:
+    db.close()
