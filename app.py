@@ -3,9 +3,9 @@ from data_fetcher import DataPipeline
 from engine_pro import InstitutionalEngine
 from trading_manager import RiskManager
 from database_manager import init_db, SessionLocal, ProScanResult
-from datetime import datetime
+from datetime import datetime, timezone
 
-# Initialize DB Tables
+# Initialize DB
 init_db()
 
 st.set_page_config(page_title="🛡️ Institutional NSE Swing Platform", layout="wide")
@@ -15,15 +15,14 @@ st.sidebar.title("Trading Controls")
 if st.sidebar.button("🚀 Run Full NSE500 Scan"):
     symbols = DataPipeline.get_nse500_symbols()
     
-    # 1. Fetch Regime Data (Indices)
-    # Note: No .NS for indices
+    # 1. Fetch Regime Data
     mkt_df = DataPipeline.fetch_market_data("^NSEI")
     mid_df = DataPipeline.fetch_market_data("^NSEMDCP50")
     
     if mkt_df is None:
         st.error("Market data unavailable. Please try again.")
     else:
-        st.info(f"Downloading data for {len(symbols)} stocks...")
+        st.info(f"Downloading data for {len(symbols)} symbols...")
         all_data = DataPipeline.fetch_batch_data(symbols)
         
         if all_data is None:
@@ -33,27 +32,27 @@ if st.sidebar.button("🚀 Run Full NSE500 Scan"):
             progress = st.progress(0)
             status_text = st.empty()
             found_count = 0
-            today = datetime.utcnow().date()
+            # Modern UTC datetime logic
+            today = datetime.now(timezone.utc).date()
 
-            # 2. Process Data Locally (Fast)
+            # 2. Process Data Locally
             for i, sym in enumerate(symbols):
                 ticker_sym = f"{sym}.NS"
                 try:
-                    # Extract individual stock from batch
+                    # Robust extraction: check if ticker exists in batch result
+                    if ticker_sym not in all_data.columns.get_level_values(0):
+                        continue
+                        
                     df = all_data[ticker_sym].dropna()
                     
-                    if len(df) > 200:
-                        # Institutional Analysis
+                    if len(df) >= 200:
                         engine = InstitutionalEngine(df, mkt_df, mid_df)
                         score, setup_type, explanation = engine.get_contextual_score()
                         
-                        # Apply Institutional Threshold
                         if score >= 70:
-                            # ATR Risk Check
                             levels = RiskManager.get_levels(df)
-                            
                             if levels:
-                                # Prevent Duplicate Entry for Today
+                                # Prevent Duplicate Entry
                                 existing = db.query(ProScanResult).filter_by(
                                     symbol=sym, scan_date=today
                                 ).first()
@@ -75,9 +74,8 @@ if st.sidebar.button("🚀 Run Full NSE500 Scan"):
                                     db.add(res)
                                     found_count += 1
                 except Exception:
-                    continue # Skip tickers with corrupted data
+                    continue
                 
-                # Update UI
                 if i % 10 == 0:
                     status_text.text(f"Analyzing {sym}... ({i+1}/{len(symbols)})")
                     progress.progress((i + 1) / len(symbols))
@@ -92,8 +90,8 @@ st.title("🛡️ Institutional NSE Swing Platform")
 
 db = SessionLocal()
 try:
-    # Pull current setups (Latest Scans)
-    today = datetime.utcnow().date()
+    # Modern UTC date for query
+    today = datetime.now(timezone.utc).date()
     results = db.query(ProScanResult).filter(
         ProScanResult.scan_date == today
     ).order_by(ProScanResult.score.desc()).all()
@@ -108,7 +106,6 @@ try:
     if results:
         st.subheader(f"🎯 Top Opportunities ({len(results)})")
         for res in results:
-            # Color coding for ELITE setups
             header = f"⭐ {res.symbol} | Score: {res.score}/100 | {res.setup_type}"
             if res.score >= 85: header = "🔥 [ELITE] " + header
             
@@ -130,6 +127,6 @@ try:
                         st.write(f"✅ {point}")
                     st.caption(f"Scanned: {res.scan_date} | Regime: {res.market_regime}")
     else:
-        st.warning("Database is empty. Run a 'Full Scan' from the sidebar to populate.")
+        st.warning("Database is empty. Run a 'Full Scan' from the sidebar.")
 finally:
     db.close()
