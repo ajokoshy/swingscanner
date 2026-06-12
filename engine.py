@@ -1,6 +1,7 @@
 import pandas as pd
 import pandas_ta as ta
 import yfinance as yf
+import numpy as np
 
 class SwingEngine:
     def __init__(self, symbol):
@@ -10,18 +11,18 @@ class SwingEngine:
     def fetch_data(self):
         try:
             # 1. Download data
-            # auto_adjust=True and actions=False keeps the dataframe simple
             data = yf.download(self.symbol, period="2y", interval="1d", progress=False, auto_adjust=True)
             
             if data.empty:
                 return False
 
-            # 2. FIX MULTI-INDEX (Crucial step)
-            # This flattens columns like ('Close', 'RELIANCE.NS') to just 'Close'
+            # 2. Flatten MultiIndex columns
             if isinstance(data.columns, pd.MultiIndex):
                 data.columns = data.columns.get_level_values(0)
             
-            # 3. Clean any duplicate column names and set index
+            # 3. IMPORTANT: Remove any rows that have no price data (Fixes the 'nan' issue)
+            data = data.dropna(subset=['Close'])
+            
             self.df = data.copy()
             return True
         except Exception as e:
@@ -29,39 +30,35 @@ class SwingEngine:
             return False
 
     def analyze(self):
-        # We need at least 200 days for EMA200
-        if self.df is None or len(self.df) < 200:
+        # We need data to calculate indicators
+        if self.df is None or len(self.df) < 20:
             return None
         
         df = self.df.copy()
         
-        # 1. Calculate Technical Indicators using pandas_ta
+        # 1. Calculate Technical Indicators
         df['ema20'] = ta.ema(df['Close'], length=20)
         df['ema50'] = ta.ema(df['Close'], length=50)
         df['ema200'] = ta.ema(df['Close'], length=200)
         df['rsi'] = ta.rsi(df['Close'], length=14)
         df['vol_sma'] = ta.sma(df['Volume'], length=20)
         
-        # MACD returns a DataFrame, so we join it
         macd = ta.macd(df['Close'])
         df = pd.concat([df, macd], axis=1)
 
-        # 2. Extract ONLY the last row and convert to a flat Dictionary
-        # This converts Pandas Series into simple Python floats/strings
-        # It completely bypasses the "Identically-labeled Series" error
+        # 2. Drop rows where indicators are NaN (the first 200 rows)
+        # Then pick the very last valid row
+        df = df.dropna(subset=['ema20', 'rsi'])
+        if df.empty:
+            return None
+            
         last = df.iloc[-1].to_dict()
         
-        score = 0
-        reasons = []
-        
-        # Helper to get numeric values safely from the dictionary
+        # Helper to get numeric values safely
         def get_val(key):
             val = last.get(key, 0)
-            try:
-                # Handle cases where value might be a series or nan
-                return float(val.iloc[0]) if hasattr(val, 'iloc') else float(val)
-            except:
-                return 0.0
+            if pd.isna(val): return 0.0
+            return float(val)
 
         close_p = get_val('Close')
         ema20 = get_val('ema20')
@@ -72,26 +69,24 @@ class SwingEngine:
         vol_sma = get_val('vol_sma')
 
         # 3. Scoring Logic
-        # Trend
-        if close_p > ema200: 
+        score = 0
+        reasons = []
+        
+        if close_p > ema200 and ema200 > 0: 
             score += 20
             reasons.append("Price above EMA200")
         if ema20 > ema50: 
             score += 15
             reasons.append("Short-term EMA Bullish Alignment")
-        
-        # Momentum
         if 45 < rsi < 70: 
             score += 20
             reasons.append("RSI in Bullish Zone")
             
-        # MACD check (Finding the histogram column dynamically)
         hist_col = [c for c in df.columns if 'MACDh' in str(c)]
         if hist_col and get_val(hist_col[0]) > 0:
             score += 15
             reasons.append("MACD Histogram Positive")
         
-        # Volume
         if vol > vol_sma * 1.5: 
             score += 30
             reasons.append("High Volume Breakout")
@@ -99,12 +94,15 @@ class SwingEngine:
             score += 10
             reasons.append("Volume above average")
 
-        # 4. Trade Setup Calculation
-        stop_loss = min(ema50, close_p * 0.95)
+        # 4. Trade Setup Calculation (using 1:2.5 Risk Reward)
+        # Use EMA50 as stop loss, but ensure it's below current price
+        stop_loss = ema50 if ema50 < close_p else close_p * 0.95
         risk = close_p - stop_loss
         
-        # Guard against zero risk to prevent division error
-        if risk <= 0: risk = close_p * 0.02 
+        # Prevent math errors if risk is somehow zero
+        if risk <= 0:
+            risk = close_p * 0.02
+            stop_loss = close_p - risk
 
         return {
             "symbol": self.symbol.replace(".NS", ""),
