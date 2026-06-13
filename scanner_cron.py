@@ -28,12 +28,12 @@ def send_email(setups):
     html += "<table border='1' style='border-collapse: collapse; width: 100%; font-family: sans-serif;'>"
     html += "<tr style='background-color: #004a99; color: white;'><th>Symbol</th><th>Score</th><th>Setup</th><th>Entry</th><th>Target 1</th><th>RR</th></tr>"
     
-    # setups are now list of dictionaries
+    # Sort for professional presentation (setups are now dictionaries)
     sorted_setups = sorted(setups, key=lambda x: x['score'], reverse=True)
     
     for s in sorted_setups:
         html += f"<tr><td style='padding: 8px;'><b>{s['symbol']}</b></td><td style='padding: 8px;'>{s['score']}</td><td style='padding: 8px;'>{s['setup_type']}</td><td style='padding: 8px;'>₹{s['entry']}</td><td style='padding: 8px;'>₹{s['target_1']}</td><td style='padding: 8px;'>{s['risk_reward']}</td></tr>"
-    html += "</table><p>Visit Dashboard for full ATR levels and detailed analysis.</p>"
+    html += "</table><p>Visit your dashboard for full ATR analysis and Stop Loss levels.</p>"
     msg.attach(MIMEText(html, 'html'))
 
     try:
@@ -46,34 +46,32 @@ def send_email(setups):
 
 def run_automation():
     try:
-        # Initialize Database Tables
+        # 1. Initialize Tables
         init_db()
         today = datetime.now(timezone.utc).date()
         
-        # 1. MAINTENANCE PURGE: Clear collisions using Direct Connection
-        # We talk directly to the Engine, bypassing the Session layer entirely.
-        # This clears 'Today' and 'June 13' to ensure a fresh, successful scan.
+        # 2. PURE ENGINE CLEANUP: Wipes the collision dates immediately.
+        # This bypasses the SQLAlchemy Session entirely to avoid 'Flush' errors.
         print(f"Purging database collisions for {today} and June 13th...")
         with db_engine.connect() as conn:
             conn.execute(text("DELETE FROM pro_scans_v2 WHERE scan_date = '2026-06-13'"))
             conn.execute(text("DELETE FROM pro_scans_v2 WHERE scan_date = :d"), {"d": today})
             conn.commit()
 
-        # 2. DATA ACQUISITION
+        # 3. HIGH SPEED DATA ACQUISITION
         symbols = DataPipeline.get_nse500_symbols()
         symbols = [s.strip() for s in symbols if s and not s.startswith("DUMMY")]
         
         mkt_df = DataPipeline.fetch_market_data("^NSEI")
         mid_df = DataPipeline.fetch_market_data("^NSEMDCP50")
+        if mkt_df is None: raise Exception("Regime data unavailable.")
+        
         all_data = DataPipeline.fetch_batch_data(symbols)
         
-        if mkt_df is None:
-            raise Exception("Market Index data unavailable.")
-
         print(f"🚀 Analyzing {len(symbols)} symbols in memory...")
-        batch_results = []
+        final_data_batch = []
 
-        # 3. ANALYSIS LOOP (Pure Python - No database contact here)
+        # 4. ANALYSIS LOOP (Pure Python - No DB calls here)
         for sym in symbols:
             try:
                 ticker_sym = f"{sym}.NS"
@@ -87,8 +85,8 @@ def run_automation():
                     if score >= 70:
                         levels = RiskManager.get_levels(df)
                         if levels:
-                            # 4. STORE IN DICTIONARY (Bypasses ORM/Session tracking)
-                            batch_results.append({
+                            # CREATE RAW DICTIONARY (No ORM tracking)
+                            final_data_batch.append({
                                 "symbol": sym,
                                 "scan_date": today,
                                 "score": int(score),
@@ -105,27 +103,27 @@ def run_automation():
             except Exception:
                 continue
 
-        # 5. RAW SQL BULK INSERT (Session-less & Unbreakable)
-        if batch_results:
-            print(f"Directly saving {len(batch_results)} setups via Raw SQL...")
-            insert_sql = text("""
+        # 5. DIRECT BULK INSERT (Session-less)
+        if final_data_batch:
+            print(f"Directly saving {len(final_data_batch)} setups to database...")
+            # Raw SQL INSERT. 'ON CONFLICT DO NOTHING' is added as a safety net.
+            insert_query = text("""
                 INSERT INTO pro_scans_v2 
                 (symbol, scan_date, score, setup_type, market_regime, entry, stop_loss, target_1, target_2, target_3, risk_reward, explanation)
                 VALUES (:symbol, :scan_date, :score, :setup_type, :market_regime, :entry, :stop_loss, :target_1, :target_2, :target_3, :risk_reward, :explanation)
+                ON CONFLICT (symbol, scan_date) DO NOTHING
             """)
             
             with db_engine.connect() as conn:
-                # Core execution handles the entire list as a single high-speed transaction
-                conn.execute(insert_sql, batch_results)
+                conn.execute(insert_query, final_data_batch)
                 conn.commit()
         
-        # 6. RAW SQL FETCH FOR EMAIL
-        print("Finalizing results for email report...")
+        # 6. FETCH RESULTS FOR EMAIL (Using direct engine connection)
         with db_engine.connect() as conn:
-            fetch_sql = text("SELECT * FROM pro_scans_v2 WHERE scan_date = :d ORDER BY score DESC")
+            fetch_sql = text("SELECT symbol, score, setup_type, entry, target_1, risk_reward FROM pro_scans_v2 WHERE scan_date = :d ORDER BY score DESC")
             final_list = conn.execute(fetch_sql, {"d": today}).mappings().all()
         
-        print(f"✅ Success. Found {len(final_list)} setups.")
+        print(f"✅ Success. Found {len(final_list)} active setups.")
         send_email(final_list)
         
     except Exception:
