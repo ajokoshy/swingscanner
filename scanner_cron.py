@@ -5,6 +5,7 @@ import smtplib
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from datetime import datetime, timezone
+from sqlalchemy.dialects.postgresql import insert  # Required for Upsert
 from data_fetcher import DataPipeline
 from engine_pro import InstitutionalEngine
 from trading_manager import RiskManager
@@ -16,7 +17,7 @@ def send_email(setups):
     receiver_email = os.getenv("RECEIVER_EMAIL")
 
     if not setups:
-        print("No new setups found today. Skipping email.")
+        print("No new elite setups found for this scan. Skipping email.")
         return
 
     msg = MIMEMultipart()
@@ -30,7 +31,7 @@ def send_email(setups):
     
     for s in setups:
         html += f"<tr><td style='padding: 8px;'><b>{s['symbol']}</b></td><td style='padding: 8px;'>{s['score']}</td><td style='padding: 8px;'>{s['type']}</td><td style='padding: 8px;'>₹{s['entry']}</td><td style='padding: 8px;'>₹{s['t1']}</td><td style='padding: 8px;'>{s['rr']}</td></tr>"
-    html += "</table><p>Visit your dashboard for full analysis and stop loss levels.</p>"
+    html += "</table><p>Open your Dashboard for full analysis and ATR-based stop loss levels.</p>"
     
     msg.attach(MIMEText(html, 'html'))
 
@@ -45,26 +46,24 @@ def send_email(setups):
 def run_automation():
     try:
         init_db()
-        print("Database initialized.")
+        print("Connecting to Market Data...")
         
         symbols = DataPipeline.get_nse500_symbols()
         mkt_df = DataPipeline.fetch_market_data("^NSEI")
         mid_df = DataPipeline.fetch_market_data("^NSEMDCP50")
         
         if mkt_df is None:
-            raise Exception("Failed to fetch Market Regime data.")
+            raise Exception("Regime Data (Nifty 50) Unavailable.")
 
-        print("Downloading batch data...")
         all_data = DataPipeline.fetch_batch_data(symbols)
         if all_data is None:
-            raise Exception("Batch data download failed.")
+            raise Exception("Market Batch Download Failed.")
 
         db = SessionLocal()
         email_setups = []
-        # Ensure date consistency with database
         today = datetime.now(timezone.utc).date()
 
-        print(f"Starting scan for {len(symbols)} symbols...")
+        print(f"Analyzing {len(symbols)} symbols...")
         for sym in symbols:
             try:
                 ticker_sym = f"{sym}.NS"
@@ -77,44 +76,48 @@ def run_automation():
                     engine = InstitutionalEngine(df, mkt_df, mid_df)
                     score, setup_type, explanation = engine.get_contextual_score()
                     
-                    if score >= 70:
+                    if score >= 75: # High quality threshold for email alerts
                         levels = RiskManager.get_levels(df)
                         if levels:
-                            # 1. ATOMIC CHECK & SAVE
-                            existing = db.query(ProScanResult).filter_by(
-                                symbol=sym, 
-                                scan_date=today
-                            ).first()
+                            # PREPARE DATA DICTIONARY
+                            data_dict = {
+                                "symbol": sym,
+                                "scan_date": today,
+                                "score": score,
+                                "setup_type": setup_type,
+                                "market_regime": "BULLISH" if score > 75 else "NEUTRAL",
+                                "entry": levels['entry'],
+                                "stop_loss": levels['stop_loss'],
+                                "target_1": levels['t1'],
+                                "target_2": levels['t2'],
+                                "target_3": levels['t3'],
+                                "risk_reward": levels['rr'],
+                                "explanation": explanation
+                            }
+
+                            # 1. INSTITUTIONAL UPSERT (INSERT OR IGNORE)
+                            # This prevents the UniqueViolation crash completely
+                            stmt = insert(ProScanResult).values(data_dict)
+                            stmt = stmt.on_conflict_do_nothing(index_elements=['symbol', 'scan_date'])
                             
-                            if not existing:
-                                try:
-                                    res = ProScanResult(
-                                        symbol=sym, score=score, setup_type=setup_type,
-                                        market_regime="BULLISH" if score > 75 else "NEUTRAL", 
-                                        entry=levels['entry'],
-                                        stop_loss=levels['stop_loss'], target_1=levels['t1'],
-                                        target_2=levels['t2'], target_3=levels['t3'],
-                                        risk_reward=levels['rr'], explanation=explanation
-                                    )
-                                    db.add(res)
-                                    db.commit() # Commit immediately to handle duplicates
-                                    
-                                    email_setups.append({
-                                        'symbol': sym, 'score': score, 'type': setup_type, 
-                                        'entry': levels['entry'], 't1': levels['t1'], 'rr': levels['rr']
-                                    })
-                                except Exception:
-                                    db.rollback() # If save fails (e.g. duplicate), skip this stock
-                                    continue
-            except Exception as e:
+                            result = db.execute(stmt)
+                            
+                            # result.rowcount is 1 if it's a new entry, 0 if it was a duplicate
+                            if result.rowcount > 0:
+                                email_setups.append({
+                                    'symbol': sym, 'score': score, 'type': setup_type, 
+                                    'entry': levels['entry'], 't1': levels['t1'], 'rr': levels['rr']
+                                })
+            except Exception:
                 continue
 
+        db.commit()
         db.close()
-        print(f"Scan successful. Emailed {len(email_setups)} new setups.")
+        print(f"Scan Finished. Found {len(email_setups)} new setups.")
         send_email(email_setups)
         
-    except Exception as e:
-        print("--- CRITICAL ERROR ---")
+    except Exception:
+        print("--- CRITICAL SYSTEM ERROR ---")
         traceback.print_exc()
         sys.exit(1)
 
