@@ -17,7 +17,7 @@ def send_email(setups):
     receiver_email = os.getenv("RECEIVER_EMAIL")
 
     if not setups:
-        print("No new setups found today. Email skipped.")
+        print("No setups found for this scan. Email skipped.")
         return
 
     msg = MIMEMultipart()
@@ -31,7 +31,7 @@ def send_email(setups):
     
     for s in setups:
         html += f"<tr><td style='padding: 8px;'><b>{s.symbol}</b></td><td style='padding: 8px;'>{s.score}</td><td style='padding: 8px;'>{s.setup_type}</td><td style='padding: 8px;'>₹{s.entry}</td><td style='padding: 8px;'>₹{s.target_1}</td><td style='padding: 8px;'>{s.risk_reward}</td></tr>"
-    html += "</table><p>Visit your dashboard for full ATR analysis.</p>"
+    html += "</table><p>Visit Dashboard for full analysis.</p>"
     
     msg.attach(MIMEText(html, 'html'))
 
@@ -39,17 +39,21 @@ def send_email(setups):
         with smtplib.SMTP_SSL('smtp.gmail.com', 465) as server:
             server.login(sender_email, sender_password)
             server.sendmail(sender_email, receiver_email, msg.as_string())
-        print("✅ Email sent successfully.")
+        print("✅ Email sent.")
     except Exception as e:
         print(f"❌ Email failed: {e}")
 
 def run_automation():
     try:
         init_db()
+        today = datetime.now(timezone.utc).date()
         
-        # 1. EMERGENCY CLEANUP: Remove the data for June 13th that is causing collisions
-        print("Performing database maintenance...")
+        # 1. CLEANUP: Delete any existing entries for today to prevent collisions
+        # Using direct connection to bypass ORM Session issues
+        print(f"Cleaning existing data for {today}...")
         with db_engine.connect() as conn:
+            conn.execute(text("DELETE FROM pro_scans_v2 WHERE scan_date = :d"), {"d": today})
+            # Also clear that '2026-06-13' date specifically from your logs
             conn.execute(text("DELETE FROM pro_scans_v2 WHERE scan_date = '2026-06-13'"))
             conn.commit()
 
@@ -61,18 +65,16 @@ def run_automation():
             raise Exception("Regime data unavailable.")
 
         all_data = DataPipeline.fetch_batch_data(symbols)
-        today = datetime.now(timezone.utc).date()
-        print(f"🚀 Starting institutional scan for {today}...")
+        print(f"🚀 Starting scan for {today}...")
 
-        # 2. DEFINE RAW SQL UPSERT (The most robust method for PostgreSQL)
-        upsert_query = text("""
+        # 2. RAW SQL INSERT (Session-less)
+        # This bypasses SQLAlchemy's auto-flush logic entirely
+        insert_query = text("""
             INSERT INTO pro_scans_v2 
             (symbol, scan_date, score, setup_type, market_regime, entry, stop_loss, target_1, target_2, target_3, risk_reward, explanation)
             VALUES (:symbol, :scan_date, :score, :setup_type, :market_regime, :entry, :stop_loss, :target_1, :target_2, :target_3, :risk_reward, :explanation)
-            ON CONFLICT (symbol, scan_date) DO NOTHING
         """)
 
-        # Process setups
         for sym in symbols:
             try:
                 ticker_sym = f"{sym}.NS"
@@ -87,10 +89,8 @@ def run_automation():
                     if score >= 70:
                         levels = RiskManager.get_levels(df)
                         if levels:
-                            # 3. USE DIRECT ENGINE CONNECTION (Bypasses Session entirely)
-                            # This prevents the 'UniqueViolation' crash in the Session layer
                             with db_engine.connect() as conn:
-                                conn.execute(upsert_query, {
+                                conn.execute(insert_query, {
                                     "symbol": sym,
                                     "scan_date": today,
                                     "score": int(score),
@@ -108,7 +108,8 @@ def run_automation():
             except Exception:
                 continue
 
-        # 4. FETCH FINAL RESULTS FOR EMAIL
+        # 3. FETCH RESULTS FOR EMAIL
+        # Now we can safely use the session just to read data
         db = SessionLocal()
         final_setups = db.query(ProScanResult).filter_by(scan_date=today).order_by(ProScanResult.score.desc()).all()
         db.close()
