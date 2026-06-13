@@ -4,22 +4,24 @@ on:
   schedule:
     # 5 PM IST is 11:30 AM UTC
     - cron: '30 11 * * 1-5'
-  workflow_dispatch: # Allows manual trigger
+  workflow_dispatch: # Allows you to trigger it manually for testing
 
 jobs:
   scan:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout Code
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4 # Updated version
 
       - name: Set up Python
-        uses: actions/setup-python@v4
+        uses: actions/setup-python@v5 # Updated version
         with:
           python-version: '3.12'
 
       - name: Install Dependencies
-        run: pip install -r requirements.txt
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
 
       - name: Run Scanner
         env:
