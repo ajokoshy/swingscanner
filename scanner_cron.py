@@ -6,17 +6,18 @@ from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from datetime import datetime, timezone
 from sqlalchemy import text
+from sqlalchemy.dialects.postgresql import insert as pg_upsert
 from data_fetcher import DataPipeline
 from engine_pro import InstitutionalEngine
 from trading_manager import RiskManager
-from database_manager import init_db, engine as db_engine
+from database_manager import init_db, engine as db_engine, ProScanResult
 
 def send_email(setups):
     sender_email = os.getenv("EMAIL_USER")
     sender_password = os.getenv("EMAIL_PASS")
     receiver_email = os.getenv("RECEIVER_EMAIL")
     if not setups:
-        print("No new setups found today. Skipping email.")
+        print("No new elite setups found. Email skipped.")
         return
 
     msg = MIMEMultipart()
@@ -28,47 +29,58 @@ def send_email(setups):
     html += "<table border='1' style='border-collapse: collapse; width: 100%; font-family: sans-serif;'>"
     html += "<tr style='background-color: #004a99; color: white;'><th>Symbol</th><th>Score</th><th>Setup</th><th>Entry</th><th>Target 1</th><th>RR</th></tr>"
     
-    # setups are now dictionaries from raw SQL query
-    for s in setups:
+    # Sort for professional presentation
+    sorted_setups = sorted(setups, key=lambda x: x['score'], reverse=True)
+    
+    for s in sorted_setups:
         html += f"<tr><td style='padding: 8px;'><b>{s['symbol']}</b></td><td style='padding: 8px;'>{s['score']}</td><td style='padding: 8px;'>{s['setup_type']}</td><td style='padding: 8px;'>₹{s['entry']}</td><td style='padding: 8px;'>₹{s['target_1']}</td><td style='padding: 8px;'>{s['risk_reward']}</td></tr>"
-    html += "</table><p>Visit Dashboard for full ATR levels and detailed analysis.</p>"
+    html += "</table><p>Visit your dashboard for full ATR analysis and Stop Loss levels.</p>"
+    
     msg.attach(MIMEText(html, 'html'))
 
     try:
         with smtplib.SMTP_SSL('smtp.gmail.com', 465) as server:
             server.login(sender_email, sender_password)
             server.sendmail(sender_email, receiver_email, msg.as_string())
-        print("✅ Email sent.")
+        print("✅ Email report sent.")
     except Exception as e:
         print(f"❌ Email failed: {e}")
 
 def run_automation():
     try:
+        # Step 0: Ensure tables exist
         init_db()
         today = datetime.now(timezone.utc).date()
         
-        # 1. PURE SQL MAINTENANCE: Delete existing entries to prevent any collisions
-        # We talk directly to the Engine, bypassing the ORM Session entirely.
-        print(f"Purging database collisions for {today} and June 13th...")
-        with db_engine.connect() as conn:
-            conn.execute(text("DELETE FROM pro_scans_v2 WHERE scan_date = :d OR scan_date = '2026-06-13'"), {"d": today})
-            conn.commit()
+        # 1. NUCLEAR MAINTENANCE (PURE CORE)
+        # Talking directly to the Engine bypasses the SQLAlchemy Session layer entirely.
+        # This wipes the collisions for 'June 13' and 'Today' to ensure a fresh, successful scan.
+        print(f"Maintenance: Purging collisions for {today} and June 13th...")
+        with db_engine.begin() as conn:
+            conn.execute(text("DELETE FROM pro_scans_v2 WHERE scan_date = '2026-06-13'"))
+            conn.execute(text("DELETE FROM pro_scans_v2 WHERE scan_date = :d"), {"d": today})
 
-        # 2. DATA ACQUISITION
+        # 2. HIGH SPEED DATA FETCH
         symbols = DataPipeline.get_nse500_symbols()
         symbols = [s.strip() for s in symbols if s and not s.startswith("DUMMY")]
+        
         mkt_df = DataPipeline.fetch_market_data("^NSEI")
         mid_df = DataPipeline.fetch_market_data("^NSEMDCP50")
+        
+        if mkt_df is None:
+            raise Exception("Market Index data unavailable.")
+
         all_data = DataPipeline.fetch_batch_data(symbols)
         
-        print(f"🚀 Analyzing {len(symbols)} symbols in memory...")
-        batch_results = []
+        print(f"🚀 Processing {len(symbols)} symbols in memory...")
+        analysis_batch = []
 
-        # 3. ANALYSIS LOOP (Pure Python - No database contact here)
+        # 3. ANALYSIS LOOP (Pure RAM - No database contact here)
         for sym in symbols:
             try:
                 ticker_sym = f"{sym}.NS"
-                if ticker_sym not in all_data.columns.get_level_values(0): continue
+                if ticker_sym not in all_data.columns.get_level_values(0):
+                    continue
                 
                 df = all_data[ticker_sym].dropna()
                 if len(df) >= 150:
@@ -78,8 +90,9 @@ def run_automation():
                     if score >= 70:
                         levels = RiskManager.get_levels(df)
                         if levels:
-                            # 4. STORE IN SIMPLE LIST OF DICTIONARIES
-                            batch_results.append({
+                            # IMPORTANT: Store as a DICTIONARY, NOT a ProScanResult object.
+                            # This ensures SQLAlchemy doesn't 'track' it and cause a crash.
+                            analysis_batch.append({
                                 "symbol": sym,
                                 "scan_date": today,
                                 "score": int(score),
@@ -96,21 +109,19 @@ def run_automation():
             except Exception:
                 continue
 
-        # 5. RAW SQL BULK INSERT (The final fix for IntegrityError)
-        if batch_results:
-            print(f"Directly saving {len(batch_results)} setups via Raw SQL...")
-            insert_sql = text("""
-                INSERT INTO pro_scans_v2 
-                (symbol, scan_date, score, setup_type, market_regime, entry, stop_loss, target_1, target_2, target_3, risk_reward, explanation)
-                VALUES (:symbol, :scan_date, :score, :setup_type, :market_regime, :entry, :stop_loss, :target_1, :target_2, :target_3, :risk_reward, :explanation)
-            """)
+        # 4. DIRECT BATCH UPSERT (Session-less)
+        if analysis_batch:
+            print(f"Directly saving {len(analysis_batch)} setups to database...")
+            # We use the raw Core insert command with the Postgres 'ON CONFLICT' rule
+            stmt = pg_upsert(ProScanResult).values(analysis_batch)
+            stmt = stmt.on_conflict_do_nothing(index_elements=['symbol', 'scan_date'])
             
-            with db_engine.connect() as conn:
-                conn.execute(insert_sql, batch_results)
-                conn.commit()
+            with db_engine.begin() as conn:
+                # SQLAlchemy's Core engine handles the batch list instantly
+                conn.execute(stmt)
         
-        # 6. RAW SQL FETCH FOR EMAIL (No Session involved)
-        print("Fetching results for email report...")
+        # 5. FETCH RECENT RESULTS AND EMAIL
+        # Use a fresh, clean connection just for reading for the email
         with db_engine.connect() as conn:
             fetch_sql = text("SELECT * FROM pro_scans_v2 WHERE scan_date = :d ORDER BY score DESC")
             final_list = conn.execute(fetch_sql, {"d": today}).mappings().all()
