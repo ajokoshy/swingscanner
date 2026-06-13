@@ -5,7 +5,8 @@ import smtplib
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from datetime import datetime, timezone
-from sqlalchemy.dialects.postgresql import insert # Critical for PostgreSQL Upsert
+from sqlalchemy import text, insert
+from sqlalchemy.dialects.postgresql import insert as pg_insert # Required for Upsert
 from data_fetcher import DataPipeline
 from engine_pro import InstitutionalEngine
 from trading_manager import RiskManager
@@ -17,7 +18,7 @@ def send_email(setups):
     receiver_email = os.getenv("RECEIVER_EMAIL")
 
     if not setups:
-        print("No new setups to report today.")
+        print("No new elite setups found today.")
         return
 
     msg = MIMEMultipart()
@@ -25,13 +26,13 @@ def send_email(setups):
     msg['From'] = f"NSE Pro Scanner <{sender_email}>"
     msg['To'] = receiver_email
 
-    html = f"<h3>Institutional Swing Setups Found Today ({len(setups)})</h3>"
+    html = f"<h3>Institutional Swing Setups Found ({len(setups)})</h3>"
     html += "<table border='1' style='border-collapse: collapse; width: 100%; font-family: sans-serif;'>"
     html += "<tr style='background-color: #004a99; color: white;'><th>Symbol</th><th>Score</th><th>Setup</th><th>Entry</th><th>Target 1</th><th>RR</th></tr>"
     
     for s in setups:
-        html += f"<tr><td style='padding: 8px;'><b>{s['symbol']}</b></td><td style='padding: 8px;'>{s['score']}</td><td style='padding: 8px;'>{s['type']}</td><td style='padding: 8px;'>₹{s['entry']}</td><td style='padding: 8px;'>₹{s['t1']}</td><td style='padding: 8px;'>{s['rr']}</td></tr>"
-    html += "</table><p>Visit Dashboard for full ATR-based analysis.</p>"
+        html += f"<tr><td style='padding: 8px;'><b>{s.symbol}</b></td><td style='padding: 8px;'>{s.score}</td><td style='padding: 8px;'>{s.setup_type}</td><td style='padding: 8px;'>₹{s.entry}</td><td style='padding: 8px;'>₹{s.target_1}</td><td style='padding: 8px;'>{s.risk_reward}</td></tr>"
+    html += "</table><p>Visit Dashboard for Full Analysis.</p>"
     
     msg.attach(MIMEText(html, 'html'))
 
@@ -48,18 +49,20 @@ def run_automation():
     try:
         init_db()
         
+        # 1. CLEANUP STUCK DATA (Ensures June 13th collisions are cleared)
+        db.execute(text("DELETE FROM pro_scans_v2 WHERE scan_date = '2026-06-13'"))
+        db.commit()
+
         symbols = DataPipeline.get_nse500_symbols()
         mkt_df = DataPipeline.fetch_market_data("^NSEI")
         mid_df = DataPipeline.fetch_market_data("^NSEMDCP50")
         
         if mkt_df is None:
-            raise Exception("Regime data (Nifty 50) unavailable.")
+            raise Exception("Regime data unavailable.")
 
         all_data = DataPipeline.fetch_batch_data(symbols)
         today = datetime.now(timezone.utc).date()
-        print(f"Scanning for {today}...")
-
-        email_setups = []
+        print(f"Scanning {len(symbols)} stocks for {today}...")
 
         for sym in symbols:
             try:
@@ -75,43 +78,38 @@ def run_automation():
                     if score >= 70:
                         levels = RiskManager.get_levels(df)
                         if levels:
-                            # 1. PREPARE DATA DICTIONARY
-                            row_dict = {
+                            # 2. DATA DICTIONARY (No Class instantiation)
+                            data_values = {
                                 "symbol": sym,
                                 "scan_date": today,
                                 "score": int(score),
                                 "setup_type": setup_type,
                                 "market_regime": "BULLISH" if score > 75 else "NEUTRAL",
-                                "entry": levels['entry'],
-                                "stop_loss": levels['stop_loss'],
-                                "target_1": levels['t1'],
-                                "target_2": levels['t2'],
-                                "target_3": levels['t3'],
-                                "risk_reward": levels['rr'],
-                                "explanation": explanation
+                                "entry": float(levels['entry']),
+                                "stop_loss": float(levels['stop_loss']),
+                                "target_1": float(levels['t1']),
+                                "target_2": float(levels['t2']),
+                                "target_3": float(levels['t3']),
+                                "risk_reward": float(levels['rr']),
+                                "explanation": str(explanation)
                             }
 
-                            # 2. EXECUTE POSTGRES UPSERT (INSERT OR IGNORE)
-                            # We use core execution here to bypass the ORM Session flush bug
-                            stmt = insert(ProScanResult).values(row_dict)
+                            # 3. DIRECT CORE UPSERT (Bypasses ORM Session)
+                            # This specific command handles duplicates at the Database level
+                            stmt = pg_insert(ProScanResult).values(data_values)
                             stmt = stmt.on_conflict_do_nothing(index_elements=['symbol', 'scan_date'])
                             
-                            result = db.execute(stmt)
-                            # result.rowcount is 1 if inserted, 0 if ignored (duplicate)
-                            if result.rowcount > 0:
-                                email_setups.append({
-                                    'symbol': sym, 'score': score, 'type': setup_type, 
-                                    'entry': levels['entry'], 't1': levels['t1'], 'rr': levels['rr']
-                                })
-            except Exception:
+                            db.execute(stmt)
+                            db.commit() # Atomic commit for every stock
+            except Exception as e:
+                db.rollback()
                 continue
 
-        db.commit() # Final commit for the session
-        print(f"Scan Finished. New setups saved: {len(email_setups)}")
-        send_email(email_setups)
+        # 4. FETCH RESULTS FROM DB TO EMAIL
+        final_setups = db.query(ProScanResult).filter_by(scan_date=today).order_by(ProScanResult.score.desc()).all()
+        send_email(final_setups)
         
     except Exception:
-        print("--- FATAL ERROR ---")
         traceback.print_exc()
         sys.exit(1)
     finally:
