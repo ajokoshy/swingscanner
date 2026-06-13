@@ -11,12 +11,14 @@ from engine_pro import InstitutionalEngine
 from trading_manager import RiskManager
 from database_manager import init_db, engine as db_engine
 
+# --- NO ORM IMPORTS HERE (This is the fix) ---
+
 def send_email(setups):
     sender_email = os.getenv("EMAIL_USER")
     sender_password = os.getenv("EMAIL_PASS")
     receiver_email = os.getenv("RECEIVER_EMAIL")
     if not setups:
-        print("No new elite setups found. Email skipped.")
+        print("No new setups found today. Skipping email.")
         return
 
     msg = MIMEMultipart()
@@ -28,8 +30,10 @@ def send_email(setups):
     html += "<table border='1' style='border-collapse: collapse; width: 100%; font-family: sans-serif;'>"
     html += "<tr style='background-color: #004a99; color: white;'><th>Symbol</th><th>Score</th><th>Setup</th><th>Entry</th><th>Target 1</th><th>RR</th></tr>"
     
-    # setups are dictionaries from the raw SQL query
-    for s in setups:
+    # Sort results by score descending
+    sorted_setups = sorted(setups, key=lambda x: x['score'], reverse=True)
+    
+    for s in sorted_setups:
         html += f"<tr><td style='padding: 8px;'><b>{s['symbol']}</b></td><td style='padding: 8px;'>{s['score']}</td><td style='padding: 8px;'>{s['setup_type']}</td><td style='padding: 8px;'>₹{s['entry']}</td><td style='padding: 8px;'>₹{s['target_1']}</td><td style='padding: 8px;'>{s['risk_reward']}</td></tr>"
     html += "</table><p>Visit Dashboard for full ATR levels and detailed analysis.</p>"
     msg.attach(MIMEText(html, 'html'))
@@ -38,19 +42,18 @@ def send_email(setups):
         with smtplib.SMTP_SSL('smtp.gmail.com', 465) as server:
             server.login(sender_email, sender_password)
             server.sendmail(sender_email, receiver_email, msg.as_string())
-        print("✅ Email sent.")
+        print("✅ Email report sent.")
     except Exception as e:
         print(f"❌ Email failed: {e}")
 
 def run_automation():
     try:
-        # Initialize Database Tables
-        init_db()
+        init_db() # Ensure tables are created
         today = datetime.now(timezone.utc).date()
         
-        # 1. PURE SQL MAINTENANCE: Force delete collision dates
-        # This bypasses the Session entirely and clears the blockage
-        print(f"Maintenance: Purging collisions for {today} and June 13th...")
+        # 1. MAINTENANCE: Purge the problematic dates causing crashes
+        # Using the engine directly bypasses the SQLAlchemy 'Session' which is causing the errors
+        print(f"Maintenance: Purging database collisions for {today} and June 13th...")
         with db_engine.connect() as conn:
             conn.execute(text("DELETE FROM pro_scans_v2 WHERE scan_date = '2026-06-13'"))
             conn.execute(text("DELETE FROM pro_scans_v2 WHERE scan_date = :d"), {"d": today})
@@ -58,7 +61,6 @@ def run_automation():
 
         # 2. DATA ACQUISITION
         symbols = DataPipeline.get_nse500_symbols()
-        # Fast filter for junk symbols
         symbols = [s.strip() for s in symbols if s and not s.startswith("DUMMY")]
         
         mkt_df = DataPipeline.fetch_market_data("^NSEI")
@@ -75,7 +77,8 @@ def run_automation():
         for sym in symbols:
             try:
                 ticker_sym = f"{sym}.NS"
-                if ticker_sym not in all_data.columns.get_level_values(0): continue
+                if ticker_sym not in all_data.columns.get_level_values(0):
+                    continue
                 
                 df = all_data[ticker_sym].dropna()
                 if len(df) >= 150:
@@ -85,7 +88,6 @@ def run_automation():
                     if score >= 70:
                         levels = RiskManager.get_levels(df)
                         if levels:
-                            # 4. STORE IN SIMPLE DICTIONARY (No ORM tracking possible)
                             batch_results.append({
                                 "symbol": sym,
                                 "scan_date": today,
@@ -103,7 +105,7 @@ def run_automation():
             except Exception:
                 continue
 
-        # 5. RAW SQL BULK INSERT (Session-less & Unbreakable)
+        # 4. RAW SQL BULK INSERT (The final fix for IntegrityError)
         if batch_results:
             print(f"Directly saving {len(batch_results)} setups via Raw SQL...")
             insert_sql = text("""
@@ -113,11 +115,11 @@ def run_automation():
             """)
             
             with db_engine.connect() as conn:
-                # Core execution handles the entire list as a single high-speed transaction
+                # Executes the entire list as a single high-speed transaction
                 conn.execute(insert_sql, batch_results)
                 conn.commit()
         
-        # 6. RAW SQL FETCH FOR EMAIL
+        # 5. RAW SQL FETCH FOR EMAIL
         print("Finalizing results for email report...")
         with db_engine.connect() as conn:
             fetch_sql = text("SELECT symbol, score, setup_type, entry, target_1, risk_reward FROM pro_scans_v2 WHERE scan_date = :d ORDER BY score DESC")
