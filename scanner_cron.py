@@ -16,7 +16,7 @@ def send_email(setups):
     sender_password = os.getenv("EMAIL_PASS")
     receiver_email = os.getenv("RECEIVER_EMAIL")
     if not setups:
-        print("No new elite setups found today. Email skipped.")
+        print("No new elite setups found. Email skipped.")
         return
 
     msg = MIMEMultipart()
@@ -28,10 +28,8 @@ def send_email(setups):
     html += "<table border='1' style='border-collapse: collapse; width: 100%; font-family: sans-serif;'>"
     html += "<tr style='background-color: #004a99; color: white;'><th>Symbol</th><th>Score</th><th>Setup</th><th>Entry</th><th>Target 1</th><th>RR</th></tr>"
     
-    # Sort for professional presentation
-    sorted_setups = sorted(setups, key=lambda x: x['score'], reverse=True)
-    
-    for s in sorted_setups:
+    # setups are dictionaries from the raw SQL query
+    for s in setups:
         html += f"<tr><td style='padding: 8px;'><b>{s['symbol']}</b></td><td style='padding: 8px;'>{s['score']}</td><td style='padding: 8px;'>{s['setup_type']}</td><td style='padding: 8px;'>₹{s['entry']}</td><td style='padding: 8px;'>₹{s['target_1']}</td><td style='padding: 8px;'>{s['risk_reward']}</td></tr>"
     html += "</table><p>Visit Dashboard for full ATR levels and detailed analysis.</p>"
     msg.attach(MIMEText(html, 'html'))
@@ -40,7 +38,7 @@ def send_email(setups):
         with smtplib.SMTP_SSL('smtp.gmail.com', 465) as server:
             server.login(sender_email, sender_password)
             server.sendmail(sender_email, receiver_email, msg.as_string())
-        print("✅ Email report sent.")
+        print("✅ Email sent.")
     except Exception as e:
         print(f"❌ Email failed: {e}")
 
@@ -50,11 +48,10 @@ def run_automation():
         init_db()
         today = datetime.now(timezone.utc).date()
         
-        # 1. NUCLEAR MAINTENANCE: Purge the problematic dates causing crashes
-        # We talk directly to the Engine, bypassing the Session layer entirely.
-        print(f"Purging database collisions for {today} and June 13th...")
+        # 1. PURE SQL MAINTENANCE: Force delete collision dates
+        # This bypasses the Session entirely and clears the blockage
+        print(f"Maintenance: Purging collisions for {today} and June 13th...")
         with db_engine.connect() as conn:
-            # Clear today's date AND the problematic June 13th date from your logs
             conn.execute(text("DELETE FROM pro_scans_v2 WHERE scan_date = '2026-06-13'"))
             conn.execute(text("DELETE FROM pro_scans_v2 WHERE scan_date = :d"), {"d": today})
             conn.commit()
@@ -69,17 +66,16 @@ def run_automation():
         all_data = DataPipeline.fetch_batch_data(symbols)
         
         if mkt_df is None:
-            raise Exception("Market Index data (Nifty 50) unavailable.")
+            raise Exception("Regime data unavailable.")
 
-        print(f"🚀 Analyzing {len(symbols)} symbols in RAM...")
-        batch_to_save = []
+        print(f"🚀 Analyzing {len(symbols)} symbols in memory...")
+        batch_results = []
 
-        # 3. ANALYSIS LOOP (Pure Python - No DB calls here)
+        # 3. ANALYSIS LOOP (Pure Python - No database contact here)
         for sym in symbols:
             try:
                 ticker_sym = f"{sym}.NS"
-                if ticker_sym not in all_data.columns.get_level_values(0):
-                    continue
+                if ticker_sym not in all_data.columns.get_level_values(0): continue
                 
                 df = all_data[ticker_sym].dropna()
                 if len(df) >= 150:
@@ -89,8 +85,8 @@ def run_automation():
                     if score >= 70:
                         levels = RiskManager.get_levels(df)
                         if levels:
-                            # 4. STORE IN DICTIONARY (Bypasses SQLAlchemy Session tracking)
-                            batch_to_save.append({
+                            # 4. STORE IN SIMPLE DICTIONARY (No ORM tracking possible)
+                            batch_results.append({
                                 "symbol": sym,
                                 "scan_date": today,
                                 "score": int(score),
@@ -108,19 +104,17 @@ def run_automation():
                 continue
 
         # 5. RAW SQL BULK INSERT (Session-less & Unbreakable)
-        if batch_to_save:
-            print(f"Saving {len(batch_to_save)} setups directly via Raw SQL...")
-            # Using raw text query with 'ON CONFLICT DO NOTHING' ensures we never crash
+        if batch_results:
+            print(f"Directly saving {len(batch_results)} setups via Raw SQL...")
             insert_sql = text("""
                 INSERT INTO pro_scans_v2 
                 (symbol, scan_date, score, setup_type, market_regime, entry, stop_loss, target_1, target_2, target_3, risk_reward, explanation)
                 VALUES (:symbol, :scan_date, :score, :setup_type, :market_regime, :entry, :stop_loss, :target_1, :target_2, :target_3, :risk_reward, :explanation)
-                ON CONFLICT (symbol, scan_date) DO NOTHING
             """)
             
             with db_engine.connect() as conn:
                 # Core execution handles the entire list as a single high-speed transaction
-                conn.execute(insert_sql, batch_to_save)
+                conn.execute(insert_sql, batch_results)
                 conn.commit()
         
         # 6. RAW SQL FETCH FOR EMAIL
