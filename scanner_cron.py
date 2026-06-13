@@ -5,7 +5,8 @@ import smtplib
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from datetime import datetime, timezone
-from sqlalchemy import text # Use raw text for guaranteed SQL execution
+from sqlalchemy import text
+from sqlalchemy.dialects.postgresql import insert
 from data_fetcher import DataPipeline
 from engine_pro import InstitutionalEngine
 from trading_manager import RiskManager
@@ -17,7 +18,7 @@ def send_email(setups):
     receiver_email = os.getenv("RECEIVER_EMAIL")
 
     if not setups:
-        print("No new setups to report today.")
+        print("No new setups found today.")
         return
 
     msg = MIMEMultipart()
@@ -25,13 +26,13 @@ def send_email(setups):
     msg['From'] = f"NSE Pro Scanner <{sender_email}>"
     msg['To'] = receiver_email
 
-    html = f"<h3>Institutional Swing Setups ({len(setups)})</h3>"
+    html = f"<h3>Institutional Swing Setups Found ({len(setups)})</h3>"
     html += "<table border='1' style='border-collapse: collapse; width: 100%; font-family: sans-serif;'>"
     html += "<tr style='background-color: #004a99; color: white;'><th>Symbol</th><th>Score</th><th>Setup</th><th>Entry</th><th>Target 1</th><th>RR</th></tr>"
     
     for s in setups:
         html += f"<tr><td style='padding: 8px;'><b>{s.symbol}</b></td><td style='padding: 8px;'>{s.score}</td><td style='padding: 8px;'>{s.setup_type}</td><td style='padding: 8px;'>₹{s.entry}</td><td style='padding: 8px;'>₹{s.target_1}</td><td style='padding: 8px;'>{s.risk_reward}</td></tr>"
-    html += "</table><p>Check your dashboard for full ATR-based analysis.</p>"
+    html += "</table><p>Visit Dashboard for Full Analysis.</p>"
     
     msg.attach(MIMEText(html, 'html'))
 
@@ -48,6 +49,11 @@ def run_automation():
     try:
         init_db()
         
+        # CLEANUP: Force delete the specific date causing errors in your logs
+        # This clears the "stuck" data for June 13th
+        db.execute(text("DELETE FROM pro_scans_v2 WHERE scan_date = '2026-06-13'"))
+        db.commit()
+
         symbols = DataPipeline.get_nse500_symbols()
         mkt_df = DataPipeline.fetch_market_data("^NSEI")
         mid_df = DataPipeline.fetch_market_data("^NSEMDCP50")
@@ -57,16 +63,7 @@ def run_automation():
 
         all_data = DataPipeline.fetch_batch_data(symbols)
         today = datetime.now(timezone.utc).date()
-        print(f"Scanning for {today}...")
-
-        # PREPARE RAW SQL FOR UPSERT
-        # This is the most robust way to ensure 'ON CONFLICT' is respected
-        upsert_query = text("""
-            INSERT INTO pro_scans_v2 
-            (symbol, scan_date, score, setup_type, market_regime, entry, stop_loss, target_1, target_2, target_3, risk_reward, explanation)
-            VALUES (:symbol, :scan_date, :score, :setup_type, :market_regime, :entry, :stop_loss, :target_1, :target_2, :target_3, :risk_reward, :explanation)
-            ON CONFLICT (symbol, scan_date) DO NOTHING
-        """)
+        print(f"Scanning {len(symbols)} stocks for {today}...")
 
         for sym in symbols:
             try:
@@ -82,8 +79,8 @@ def run_automation():
                     if score >= 70:
                         levels = RiskManager.get_levels(df)
                         if levels:
-                            # Use direct execution to bypass ORM flushing issues
-                            db.execute(upsert_query, {
+                            # PREPARE DATA
+                            data_dict = {
                                 "symbol": sym,
                                 "scan_date": today,
                                 "score": score,
@@ -96,13 +93,19 @@ def run_automation():
                                 "target_3": levels['t3'],
                                 "risk_reward": levels['rr'],
                                 "explanation": explanation
-                            })
-                            db.commit() # Commit each stock immediately
+                            }
+
+                            # DIRECT POSTGRES UPSERT (INSERT OR IGNORE)
+                            # We bypass db.add() entirely to prevent ORM conflicts
+                            stmt = insert(ProScanResult).values(data_dict)
+                            stmt = stmt.on_conflict_do_nothing(index_elements=['symbol', 'scan_date'])
+                            db.execute(stmt)
+                            db.commit() # Individual commit for total stability
             except Exception:
                 db.rollback()
                 continue
 
-        # Fetch today's setups for the email
+        # Fetch today's setups to verify what was actually saved/new
         final_setups = db.query(ProScanResult).filter_by(scan_date=today).order_by(ProScanResult.score.desc()).all()
         send_email(final_setups)
         
