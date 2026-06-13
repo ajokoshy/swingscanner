@@ -6,6 +6,7 @@ from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from datetime import datetime, timezone
 from sqlalchemy import text
+from sqlalchemy.dialects.postgresql import insert as pg_upsert
 from data_fetcher import DataPipeline
 from engine_pro import InstitutionalEngine
 from trading_manager import RiskManager
@@ -15,26 +16,20 @@ def send_email(setups):
     sender_email = os.getenv("EMAIL_USER")
     sender_password = os.getenv("EMAIL_PASS")
     receiver_email = os.getenv("RECEIVER_EMAIL")
-
     if not setups:
         print("No new setups found. Email skipped.")
         return
-
     msg = MIMEMultipart()
     msg['Subject'] = f"🚀 NSE Swing Report: {datetime.now(timezone.utc).date()}"
     msg['From'] = f"NSE Pro Scanner <{sender_email}>"
     msg['To'] = receiver_email
-
-    html = f"<h3>Institutional Swing Setups ({len(setups)})</h3>"
+    html = f"<h3>Institutional Swing Setups Found ({len(setups)})</h3>"
     html += "<table border='1' style='border-collapse: collapse; width: 100%; font-family: sans-serif;'>"
     html += "<tr style='background-color: #004a99; color: white;'><th>Symbol</th><th>Score</th><th>Setup</th><th>Entry</th><th>Target 1</th><th>RR</th></tr>"
-    
     for s in setups:
         html += f"<tr><td style='padding: 8px;'><b>{s.symbol}</b></td><td style='padding: 8px;'>{s.score}</td><td style='padding: 8px;'>{s.setup_type}</td><td style='padding: 8px;'>₹{s.entry}</td><td style='padding: 8px;'>₹{s.target_1}</td><td style='padding: 8px;'>{s.risk_reward}</td></tr>"
-    html += "</table><p>View full ATR levels on your dashboard.</p>"
-    
+    html += "</table><p>Visit Dashboard for Full Analysis.</p>"
     msg.attach(MIMEText(html, 'html'))
-
     try:
         with smtplib.SMTP_SSL('smtp.gmail.com', 465) as server:
             server.login(sender_email, sender_password)
@@ -48,26 +43,25 @@ def run_automation():
         init_db()
         today = datetime.now(timezone.utc).date()
         
-        # 1. DATABASE MAINTENANCE: Clean up stuck data using a direct connection
-        print("Maintenance: Clearing database collisions...")
+        # 1. MAINTENANCE: Clear specific date causing collisions in your logs
+        print(f"Clearing database collisions for {today} and June 13th...")
         with db_engine.connect() as conn:
-            # Clear today's date AND the problematic June 13th date from logs
             conn.execute(text("DELETE FROM pro_scans_v2 WHERE scan_date = :d OR scan_date = '2026-06-13'"), {"d": today})
             conn.commit()
 
-        # 2. FETCH DATA
+        # 2. DATA ACQUISITION
         symbols = DataPipeline.get_nse500_symbols()
-        # FILTER: Skip dummy symbols and whitespace symbols
+        # Filter symbols
         symbols = [s.strip() for s in symbols if s and not s.startswith("DUMMY")]
         
         mkt_df = DataPipeline.fetch_market_data("^NSEI")
         mid_df = DataPipeline.fetch_market_data("^NSEMDCP50")
         all_data = DataPipeline.fetch_batch_data(symbols)
         
-        print(f"🚀 Analyzing {len(symbols)} stocks for {today}...")
+        print(f"🚀 Processing {len(symbols)} symbols in memory...")
         setups_to_save = []
 
-        # 3. CORE LOGIC (In-Memory Processing)
+        # 3. ANALYSIS LOOP (In-Memory)
         for sym in symbols:
             try:
                 ticker_sym = f"{sym}.NS"
@@ -75,7 +69,7 @@ def run_automation():
                     continue
                 
                 df = all_data[ticker_sym].dropna()
-                if len(df) >= 200:
+                if len(df) >= 150: # Sufficient for analysis
                     engine = InstitutionalEngine(df, mkt_df, mid_df)
                     score, setup_type, explanation = engine.get_contextual_score()
                     
@@ -99,22 +93,19 @@ def run_automation():
             except Exception:
                 continue
 
-        # 4. DIRECT BATCH INSERT (High Speed)
+        # 4. FINAL BULK INSERT (Using protected UPSERT logic)
         if setups_to_save:
-            print(f"Saving {len(setups_to_save)} setups to Neon...")
-            # Use raw SQL to bypass SQLAlchemy Session logic entirely
-            insert_query = text("""
-                INSERT INTO pro_scans_v2 
-                (symbol, scan_date, score, setup_type, market_regime, entry, stop_loss, target_1, target_2, target_3, risk_reward, explanation)
-                VALUES (:symbol, :scan_date, :score, :setup_type, :market_regime, :entry, :stop_loss, :target_1, :target_2, :target_3, :risk_reward, :explanation)
-            """)
+            print(f"Saving {len(setups_to_save)} setups to Database...")
+            # Use raw PostgreSQL Insert with ON CONFLICT clause
+            # Bypasses ORM session flush logic
+            stmt = pg_upsert(ProScanResult).values(setups_to_save)
+            stmt = stmt.on_conflict_do_nothing(index_elements=['symbol', 'scan_date'])
             
             with db_engine.connect() as conn:
-                # This executes the entire list in one single database trip
-                conn.execute(insert_query, setups_to_save)
+                conn.execute(stmt)
                 conn.commit()
         
-        # 5. RETRIEVE AND EMAIL
+        # 5. FETCH RECENT RESULTS AND EMAIL
         db = SessionLocal()
         final_list = db.query(ProScanResult).filter_by(scan_date=today).order_by(ProScanResult.score.desc()).all()
         db.close()
@@ -123,7 +114,7 @@ def run_automation():
         send_email(final_list)
         
     except Exception:
-        print("--- FATAL ERROR ---")
+        print("--- CRITICAL SYSTEM ERROR ---")
         traceback.print_exc()
         sys.exit(1)
 
