@@ -5,7 +5,7 @@ import smtplib
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from datetime import datetime, timezone
-from sqlalchemy import text # Use Raw SQL for total control
+from sqlalchemy import text
 from data_fetcher import DataPipeline
 from engine_pro import InstitutionalEngine
 from trading_manager import RiskManager
@@ -17,7 +17,7 @@ def send_email(setups):
     receiver_email = os.getenv("RECEIVER_EMAIL")
 
     if not setups:
-        print("No new elite setups found today. Email skipped.")
+        print("No new setups found today. Email skipped.")
         return
 
     msg = MIMEMultipart()
@@ -31,7 +31,7 @@ def send_email(setups):
     
     for s in setups:
         html += f"<tr><td style='padding: 8px;'><b>{s.symbol}</b></td><td style='padding: 8px;'>{s.score}</td><td style='padding: 8px;'>{s.setup_type}</td><td style='padding: 8px;'>₹{s.entry}</td><td style='padding: 8px;'>₹{s.target_1}</td><td style='padding: 8px;'>{s.risk_reward}</td></tr>"
-    html += "</table><p>Visit your dashboard for full ATR-based analysis.</p>"
+    html += "</table><p>Visit your dashboard for full ATR analysis.</p>"
     
     msg.attach(MIMEText(html, 'html'))
 
@@ -47,11 +47,12 @@ def run_automation():
     try:
         init_db()
         
-        # 1. EMERGENCY CLEANUP: Clear the collisions for the stuck dates
-        print("Cleaning up database collisions...")
-        with db_engine.begin() as conn:
+        # 1. EMERGENCY CLEANUP: Remove the data for June 13th that is causing collisions
+        print("Performing database maintenance...")
+        with db_engine.connect() as conn:
             conn.execute(text("DELETE FROM pro_scans_v2 WHERE scan_date = '2026-06-13'"))
-        
+            conn.commit()
+
         symbols = DataPipeline.get_nse500_symbols()
         mkt_df = DataPipeline.fetch_market_data("^NSEI")
         mid_df = DataPipeline.fetch_market_data("^NSEMDCP50")
@@ -61,9 +62,9 @@ def run_automation():
 
         all_data = DataPipeline.fetch_batch_data(symbols)
         today = datetime.now(timezone.utc).date()
-        print(f"🚀 Starting scan for {today}...")
+        print(f"🚀 Starting institutional scan for {today}...")
 
-        # 2. DEFINE RAW SQL UPSERT (The most robust way)
+        # 2. DEFINE RAW SQL UPSERT (The most robust method for PostgreSQL)
         upsert_query = text("""
             INSERT INTO pro_scans_v2 
             (symbol, scan_date, score, setup_type, market_regime, entry, stop_loss, target_1, target_2, target_3, risk_reward, explanation)
@@ -71,6 +72,7 @@ def run_automation():
             ON CONFLICT (symbol, scan_date) DO NOTHING
         """)
 
+        # Process setups
         for sym in symbols:
             try:
                 ticker_sym = f"{sym}.NS"
@@ -85,8 +87,9 @@ def run_automation():
                     if score >= 70:
                         levels = RiskManager.get_levels(df)
                         if levels:
-                            # 3. DIRECT EXECUTION (Bypasses Session/ORM entirely)
-                            with db_engine.begin() as conn:
+                            # 3. USE DIRECT ENGINE CONNECTION (Bypasses Session entirely)
+                            # This prevents the 'UniqueViolation' crash in the Session layer
+                            with db_engine.connect() as conn:
                                 conn.execute(upsert_query, {
                                     "symbol": sym,
                                     "scan_date": today,
@@ -101,6 +104,7 @@ def run_automation():
                                     "risk_reward": float(levels['rr']),
                                     "explanation": str(explanation)
                                 })
+                                conn.commit()
             except Exception:
                 continue
 
