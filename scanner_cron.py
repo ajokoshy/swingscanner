@@ -17,7 +17,7 @@ def send_email(setups):
     receiver_email = os.getenv("RECEIVER_EMAIL")
 
     if not setups:
-        print("No new setups to report.")
+        print("No new setups found. Email skipped.")
         return
 
     msg = MIMEMultipart()
@@ -31,7 +31,7 @@ def send_email(setups):
     
     for s in setups:
         html += f"<tr><td style='padding: 8px;'><b>{s.symbol}</b></td><td style='padding: 8px;'>{s.score}</td><td style='padding: 8px;'>{s.setup_type}</td><td style='padding: 8px;'>₹{s.entry}</td><td style='padding: 8px;'>₹{s.target_1}</td><td style='padding: 8px;'>{s.risk_reward}</td></tr>"
-    html += "</table><p>Full analysis available on your dashboard.</p>"
+    html += "</table><p>View full ATR levels on your dashboard.</p>"
     
     msg.attach(MIMEText(html, 'html'))
 
@@ -48,21 +48,26 @@ def run_automation():
         init_db()
         today = datetime.now(timezone.utc).date()
         
-        # 1. Faster Cleanup (One command)
-        print("Maintenance: Clearing previous data for today...")
-        with db_engine.begin() as conn:
+        # 1. DATABASE MAINTENANCE: Clean up stuck data using a direct connection
+        print("Maintenance: Clearing database collisions...")
+        with db_engine.connect() as conn:
+            # Clear today's date AND the problematic June 13th date from logs
             conn.execute(text("DELETE FROM pro_scans_v2 WHERE scan_date = :d OR scan_date = '2026-06-13'"), {"d": today})
+            conn.commit()
 
-        # 2. High Speed Data Fetching
+        # 2. FETCH DATA
         symbols = DataPipeline.get_nse500_symbols()
+        # FILTER: Skip dummy symbols and whitespace symbols
+        symbols = [s.strip() for s in symbols if s and not s.startswith("DUMMY")]
+        
         mkt_df = DataPipeline.fetch_market_data("^NSEI")
         mid_df = DataPipeline.fetch_market_data("^NSEMDCP50")
         all_data = DataPipeline.fetch_batch_data(symbols)
         
-        print(f"🚀 Analyzing {len(symbols)} symbols...")
+        print(f"🚀 Analyzing {len(symbols)} stocks for {today}...")
         setups_to_save = []
 
-        # 3. Process EVERYTHING in RAM (Extremely Fast)
+        # 3. CORE LOGIC (In-Memory Processing)
         for sym in symbols:
             try:
                 ticker_sym = f"{sym}.NS"
@@ -94,27 +99,28 @@ def run_automation():
             except Exception:
                 continue
 
-        # 4. SINGLE BATCH INSERT (The speed fix)
+        # 4. DIRECT BATCH INSERT (High Speed)
         if setups_to_save:
-            print(f"Saving {len(setups_to_save)} setups to database...")
+            print(f"Saving {len(setups_to_save)} setups to Neon...")
+            # Use raw SQL to bypass SQLAlchemy Session logic entirely
             insert_query = text("""
                 INSERT INTO pro_scans_v2 
                 (symbol, scan_date, score, setup_type, market_regime, entry, stop_loss, target_1, target_2, target_3, risk_reward, explanation)
                 VALUES (:symbol, :scan_date, :score, :setup_type, :market_regime, :entry, :stop_loss, :target_1, :target_2, :target_3, :risk_reward, :explanation)
-                ON CONFLICT (symbol, scan_date) DO NOTHING
             """)
             
-            with db_engine.begin() as conn:
-                # SQLAlchemy handles the loop internally in one high-speed transaction
+            with db_engine.connect() as conn:
+                # This executes the entire list in one single database trip
                 conn.execute(insert_query, setups_to_save)
+                conn.commit()
         
-        # 5. FETCH FROM DB FOR EMAIL
+        # 5. RETRIEVE AND EMAIL
         db = SessionLocal()
-        final_results = db.query(ProScanResult).filter_by(scan_date=today).order_by(ProScanResult.score.desc()).all()
+        final_list = db.query(ProScanResult).filter_by(scan_date=today).order_by(ProScanResult.score.desc()).all()
         db.close()
         
-        print(f"✅ Scan Complete. Found {len(final_results)} setups.")
-        send_email(final_results)
+        print(f"✅ Success. Found {len(final_list)} setups.")
+        send_email(final_list)
         
     except Exception:
         print("--- FATAL ERROR ---")
