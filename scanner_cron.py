@@ -5,7 +5,7 @@ import smtplib
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from datetime import datetime, timezone
-from sqlalchemy.dialects.postgresql import insert # Critical for Upsert
+from sqlalchemy.dialects.postgresql import insert # Critical for Postgres Upsert
 from data_fetcher import DataPipeline
 from engine_pro import InstitutionalEngine
 from trading_manager import RiskManager
@@ -17,7 +17,7 @@ def send_email(setups):
     receiver_email = os.getenv("RECEIVER_EMAIL")
 
     if not setups:
-        print("No new elite setups found. Skipping email.")
+        print("No setups found for today. Skipping email.")
         return
 
     msg = MIMEMultipart()
@@ -25,13 +25,13 @@ def send_email(setups):
     msg['From'] = f"NSE Pro Scanner <{sender_email}>"
     msg['To'] = receiver_email
 
-    html = f"<h3>Top Institutional Swing Setups ({len(setups)})</h3>"
+    html = f"<h3>Institutional Swing Setups Found Today ({len(setups)})</h3>"
     html += "<table border='1' style='border-collapse: collapse; width: 100%; font-family: sans-serif;'>"
     html += "<tr style='background-color: #004a99; color: white;'><th>Symbol</th><th>Score</th><th>Setup</th><th>Entry</th><th>Target 1</th><th>RR</th></tr>"
     
     for s in setups:
-        html += f"<tr><td style='padding: 8px;'><b>{s['symbol']}</b></td><td style='padding: 8px;'>{s['score']}</td><td style='padding: 8px;'>{s['type']}</td><td style='padding: 8px;'>₹{s['entry']}</td><td style='padding: 8px;'>₹{s['t1']}</td><td style='padding: 8px;'>{s['rr']}</td></tr>"
-    html += "</table><p>Visit your dashboard for full analysis and stop loss levels.</p>"
+        html += f"<tr><td style='padding: 8px;'><b>{s.symbol}</b></td><td style='padding: 8px;'>{s.score}</td><td style='padding: 8px;'>{s.setup_type}</td><td style='padding: 8px;'>₹{s.entry}</td><td style='padding: 8px;'>₹{s.target_1}</td><td style='padding: 8px;'>{s.risk_reward}</td></tr>"
+    html += "</table><p>Visit your dashboard for full ATR-based stop loss levels and detailed analysis.</p>"
     
     msg.attach(MIMEText(html, 'html'))
 
@@ -41,29 +41,27 @@ def send_email(setups):
             server.sendmail(sender_email, receiver_email, msg.as_string())
         print("Email sent successfully.")
     except Exception as e:
-        print(f"Failed to send email: {e}")
+        print(f"Email failed: {e}")
 
 def run_automation():
+    db = SessionLocal()
     try:
         init_db()
-        print("Database initialized.")
+        print("Market data acquisition started...")
         
         symbols = DataPipeline.get_nse500_symbols()
         mkt_df = DataPipeline.fetch_market_data("^NSEI")
         mid_df = DataPipeline.fetch_market_data("^NSEMDCP50")
         
         if mkt_df is None:
-            raise Exception("Failed to fetch Market Index data.")
+            raise Exception("Regime data unavailable.")
 
         all_data = DataPipeline.fetch_batch_data(symbols)
-        if all_data is None:
-            raise Exception("Batch data download failed.")
-
-        db = SessionLocal()
-        email_setups = []
+        
+        # Consistent UTC Date
         today = datetime.now(timezone.utc).date()
+        print(f"Scanning {len(symbols)} stocks for {today}...")
 
-        print(f"Starting scan for {len(symbols)} symbols...")
         for sym in symbols:
             try:
                 ticker_sym = f"{sym}.NS"
@@ -76,11 +74,11 @@ def run_automation():
                     engine = InstitutionalEngine(df, mkt_df, mid_df)
                     score, setup_type, explanation = engine.get_contextual_score()
                     
-                    if score >= 75: # High threshold for email
+                    if score >= 70:
                         levels = RiskManager.get_levels(df)
                         if levels:
-                            # 1. PREPARE THE DATA
-                            row_data = {
+                            # 1. CORE DATA DICTIONARY
+                            data_to_save = {
                                 "symbol": sym,
                                 "scan_date": today,
                                 "score": score,
@@ -95,32 +93,28 @@ def run_automation():
                                 "explanation": explanation
                             }
 
-                            # 2. EXECUTE UPSERT (INSERT OR DO NOTHING)
-                            # This bypasses the session buffer and talks directly to Postgres
-                            stmt = insert(ProScanResult).values(row_data)
+                            # 2. CORE UPSERT (INSERT OR IGNORE)
+                            # We bypass db.add() entirely to avoid session conflicts
+                            stmt = insert(ProScanResult).values(data_to_save)
                             stmt = stmt.on_conflict_do_nothing(index_elements=['symbol', 'scan_date'])
-                            
-                            result = db.execute(stmt)
-                            db.commit() # Commit each one to keep the session clean
-
-                            # Only add to email if it was a NEW record (rowcount == 1)
-                            if result.rowcount > 0:
-                                email_setups.append({
-                                    'symbol': sym, 'score': score, 'type': setup_type, 
-                                    'entry': levels['entry'], 't1': levels['t1'], 'rr': levels['rr']
-                                })
-            except Exception as e:
-                db.rollback() # Clean session on error
+                            db.execute(stmt)
+                            db.commit() # Individual commit for maximum reliability
+            except Exception:
+                db.rollback()
                 continue
 
-        db.close()
-        print(f"Scan successful. Found {len(email_setups)} new setups.")
-        send_email(email_setups)
+        # 3. FETCH TODAY'S TOP SETUPS FROM DB TO EMAIL
+        final_setups = db.query(ProScanResult).filter_by(scan_date=today).order_by(ProScanResult.score.desc()).all()
         
-    except Exception as e:
-        print("--- CRITICAL ERROR ---")
+        print(f"Scan Finished. Database synced. Sending email for {len(final_setups)} setups.")
+        send_email(final_setups)
+        
+    except Exception:
+        print("--- FATAL ERROR ---")
         traceback.print_exc()
         sys.exit(1)
+    finally:
+        db.close()
 
 if __name__ == "__main__":
     run_automation()
