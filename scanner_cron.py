@@ -17,7 +17,7 @@ def send_email(setups):
     receiver_email = os.getenv("RECEIVER_EMAIL")
 
     if not setups:
-        print("No setups found for this scan. Email skipped.")
+        print("No new setups to report.")
         return
 
     msg = MIMEMultipart()
@@ -25,13 +25,13 @@ def send_email(setups):
     msg['From'] = f"NSE Pro Scanner <{sender_email}>"
     msg['To'] = receiver_email
 
-    html = f"<h3>Institutional Swing Setups Found Today ({len(setups)})</h3>"
+    html = f"<h3>Institutional Swing Setups ({len(setups)})</h3>"
     html += "<table border='1' style='border-collapse: collapse; width: 100%; font-family: sans-serif;'>"
     html += "<tr style='background-color: #004a99; color: white;'><th>Symbol</th><th>Score</th><th>Setup</th><th>Entry</th><th>Target 1</th><th>RR</th></tr>"
     
     for s in setups:
         html += f"<tr><td style='padding: 8px;'><b>{s.symbol}</b></td><td style='padding: 8px;'>{s.score}</td><td style='padding: 8px;'>{s.setup_type}</td><td style='padding: 8px;'>₹{s.entry}</td><td style='padding: 8px;'>₹{s.target_1}</td><td style='padding: 8px;'>{s.risk_reward}</td></tr>"
-    html += "</table><p>Visit Dashboard for full analysis.</p>"
+    html += "</table><p>Full analysis available on your dashboard.</p>"
     
     msg.attach(MIMEText(html, 'html'))
 
@@ -48,33 +48,21 @@ def run_automation():
         init_db()
         today = datetime.now(timezone.utc).date()
         
-        # 1. CLEANUP: Delete any existing entries for today to prevent collisions
-        # Using direct connection to bypass ORM Session issues
-        print(f"Cleaning existing data for {today}...")
-        with db_engine.connect() as conn:
-            conn.execute(text("DELETE FROM pro_scans_v2 WHERE scan_date = :d"), {"d": today})
-            # Also clear that '2026-06-13' date specifically from your logs
-            conn.execute(text("DELETE FROM pro_scans_v2 WHERE scan_date = '2026-06-13'"))
-            conn.commit()
+        # 1. Faster Cleanup (One command)
+        print("Maintenance: Clearing previous data for today...")
+        with db_engine.begin() as conn:
+            conn.execute(text("DELETE FROM pro_scans_v2 WHERE scan_date = :d OR scan_date = '2026-06-13'"), {"d": today})
 
+        # 2. High Speed Data Fetching
         symbols = DataPipeline.get_nse500_symbols()
         mkt_df = DataPipeline.fetch_market_data("^NSEI")
         mid_df = DataPipeline.fetch_market_data("^NSEMDCP50")
-        
-        if mkt_df is None:
-            raise Exception("Regime data unavailable.")
-
         all_data = DataPipeline.fetch_batch_data(symbols)
-        print(f"🚀 Starting scan for {today}...")
+        
+        print(f"🚀 Analyzing {len(symbols)} symbols...")
+        setups_to_save = []
 
-        # 2. RAW SQL INSERT (Session-less)
-        # This bypasses SQLAlchemy's auto-flush logic entirely
-        insert_query = text("""
-            INSERT INTO pro_scans_v2 
-            (symbol, scan_date, score, setup_type, market_regime, entry, stop_loss, target_1, target_2, target_3, risk_reward, explanation)
-            VALUES (:symbol, :scan_date, :score, :setup_type, :market_regime, :entry, :stop_loss, :target_1, :target_2, :target_3, :risk_reward, :explanation)
-        """)
-
+        # 3. Process EVERYTHING in RAM (Extremely Fast)
         for sym in symbols:
             try:
                 ticker_sym = f"{sym}.NS"
@@ -89,36 +77,47 @@ def run_automation():
                     if score >= 70:
                         levels = RiskManager.get_levels(df)
                         if levels:
-                            with db_engine.connect() as conn:
-                                conn.execute(insert_query, {
-                                    "symbol": sym,
-                                    "scan_date": today,
-                                    "score": int(score),
-                                    "setup_type": setup_type,
-                                    "market_regime": "BULLISH" if score > 75 else "NEUTRAL",
-                                    "entry": float(levels['entry']),
-                                    "stop_loss": float(levels['stop_loss']),
-                                    "target_1": float(levels['t1']),
-                                    "target_2": float(levels['t2']),
-                                    "target_3": float(levels['t3']),
-                                    "risk_reward": float(levels['rr']),
-                                    "explanation": str(explanation)
-                                })
-                                conn.commit()
+                            setups_to_save.append({
+                                "symbol": sym,
+                                "scan_date": today,
+                                "score": int(score),
+                                "setup_type": setup_type,
+                                "market_regime": "BULLISH" if score > 75 else "NEUTRAL",
+                                "entry": float(levels['entry']),
+                                "stop_loss": float(levels['stop_loss']),
+                                "target_1": float(levels['t1']),
+                                "target_2": float(levels['t2']),
+                                "target_3": float(levels['t3']),
+                                "risk_reward": float(levels['rr']),
+                                "explanation": str(explanation)
+                            })
             except Exception:
                 continue
 
-        # 3. FETCH RESULTS FOR EMAIL
-        # Now we can safely use the session just to read data
+        # 4. SINGLE BATCH INSERT (The speed fix)
+        if setups_to_save:
+            print(f"Saving {len(setups_to_save)} setups to database...")
+            insert_query = text("""
+                INSERT INTO pro_scans_v2 
+                (symbol, scan_date, score, setup_type, market_regime, entry, stop_loss, target_1, target_2, target_3, risk_reward, explanation)
+                VALUES (:symbol, :scan_date, :score, :setup_type, :market_regime, :entry, :stop_loss, :target_1, :target_2, :target_3, :risk_reward, :explanation)
+                ON CONFLICT (symbol, scan_date) DO NOTHING
+            """)
+            
+            with db_engine.begin() as conn:
+                # SQLAlchemy handles the loop internally in one high-speed transaction
+                conn.execute(insert_query, setups_to_save)
+        
+        # 5. FETCH FROM DB FOR EMAIL
         db = SessionLocal()
-        final_setups = db.query(ProScanResult).filter_by(scan_date=today).order_by(ProScanResult.score.desc()).all()
+        final_results = db.query(ProScanResult).filter_by(scan_date=today).order_by(ProScanResult.score.desc()).all()
         db.close()
         
-        print(f"Scan Finished. Database synced. Found {len(final_setups)} active setups.")
-        send_email(final_setups)
+        print(f"✅ Scan Complete. Found {len(final_results)} setups.")
+        send_email(final_results)
         
     except Exception:
-        print("--- FATAL SYSTEM ERROR ---")
+        print("--- FATAL ERROR ---")
         traceback.print_exc()
         sys.exit(1)
 
