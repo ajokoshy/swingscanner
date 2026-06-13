@@ -2,19 +2,18 @@ name: Daily NSE Market Scan
 
 on:
   schedule:
-    # 5 PM IST is 11:30 AM UTC
-    - cron: '30 11 * * 1-5'
-  workflow_dispatch: # Allows you to trigger it manually for testing
+    - cron: '30 11 * * 1-5' # 5:00 PM IST
+  workflow_dispatch:
 
 jobs:
   scan:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout Code
-        uses: actions/checkout@v4 # Updated version
+        uses: actions/checkout@v4 # Fixes Node deprecation
 
       - name: Set up Python
-        uses: actions/setup-python@v5 # Updated version
+        uses: actions/setup-python@v5 # Fixes Node deprecation
         with:
           python-version: '3.12'
 
