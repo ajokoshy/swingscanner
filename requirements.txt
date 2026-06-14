@@ -1,9 +1,9 @@
 streamlit==1.35.0
 pandas==2.2.2
-pandas-ta==0.4.71b0
+numpy==1.26.4
+pandas-ta==0.4.67b0
 yfinance==0.2.40
 sqlalchemy==2.0.30
 psycopg2-binary==2.9.9
 python-dotenv==1.0.1
-numpy==1.26.4
 requests==2.32.3
