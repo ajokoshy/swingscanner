@@ -2,7 +2,7 @@ import os, sys
 from sqlalchemy import create_engine, Column, String, Float, Integer, Date, Text, UniqueConstraint
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
-from datetime import datetime
+from datetime import datetime, timezone
 
 # 1. DATABASE URL VALIDATION
 DATABASE_URL = os.getenv("DATABASE_URL")
@@ -33,7 +33,7 @@ class ProScanResult(Base):
     __tablename__ = "pro_scans_v2"
     id = Column(Integer, primary_key=True)
     symbol = Column(String, index=True)
-    scan_date = Column(Date, default=datetime.utcnow().date)
+    scan_date = Column(Date, default=lambda: datetime.now(timezone.utc).date())
     score = Column(Integer)
     setup_type = Column(String)  # Breakout, VCP, Pullback, etc.
     market_regime = Column(String)
