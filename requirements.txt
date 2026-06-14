@@ -1,8 +1,0 @@
-streamlit
-pandas
-pandas_ta
-yfinance
-sqlalchemy
-psycopg2-binary
-python-dotenv
-numpy
