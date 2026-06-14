@@ -18,7 +18,7 @@ class InstitutionalEngine:
         df['atr'] = ta.atr(df['High'], df['Low'], df['Close'], length=14)
         df['vol_sma'] = ta.sma(df['Volume'], length=20)
 
-        # Breakout Reference Levels
+        # Breakout Reference Levels (Shifted by 1 to avoid look-ahead bias)
         df['h20'] = df['High'].rolling(window=20).max().shift(1)
         df['h50'] = df['High'].rolling(window=50).max().shift(1)
         df['h252'] = df['High'].rolling(window=252).max().shift(1)
@@ -27,11 +27,11 @@ class InstitutionalEngine:
         return df.dropna(subset=['ema200', 'rsi', 'atr'])
 
     def get_contextual_score(self):
-        """Institutional Scoring Engine (100 Points) with Length Safety"""
+        """Institutional Scoring Engine (100 Points) with VCP Tightness Logic"""
         self.df = self.calculate_indicators(self.df)
         self.mkt = self.calculate_indicators(self.mkt)
 
-        # 1. SAFETY CHECK: Ensure we have at least 1 day of valid data
+        # 1. SAFETY CHECK: Ensure we have at least some valid data after indicators
         if len(self.df) < 5 or len(self.mkt) < 5:
             return 0, "Insufficient Data", "Stock history too short for institutional analysis"
 
@@ -62,7 +62,8 @@ class InstitutionalEngine:
 
         # 5. BREAKOUT & SETUP DETECTION (20 Points)
         setup_type = "Base Formation"
-        # Check 52W High (252 days) only if data is long enough
+        
+        # Priority 1: Multi-day High Breakouts
         if len(self.df) >= 252 and last['Close'] > last['h252']:
             score_components["Breakout"] = 20
             setup_type = "52-Week High Breakout"
@@ -73,17 +74,22 @@ class InstitutionalEngine:
             score_components["Breakout"] = 10
             setup_type = "20-Day High Breakout"
 
-        # VCP Logic (ATR & Vol Contraction)
-        # Only applies when NO breakout was already detected — prevents VCP from
-        # overwriting a stronger 52-Week or 50-Day High Breakout signal.
+        # Priority 2: VCP Logic (ATR, Volume & Price Tightness)
+        # Only applies if a major breakout wasn't already triggered.
         lookback = min(10, len(self.df))
         atr_avg = self.df['atr'].iloc[-lookback:-1].mean()
-        if (score_components["Breakout"] == 0
-                and last['atr'] < (atr_avg * 0.9)
-                and last['Volume'] < last['vol_sma']):
-            setup_type = "VCP Pattern"
-            score_components["Breakout"] = 18
-            explanations.append("VCP Volatility Contraction")
+        # Calculate the high-to-low range over the last 10 days
+        price_spread = (self.df['High'].iloc[-lookback:].max() / self.df['Low'].iloc[-lookback:].min()) - 1
+        
+        if score_components["Breakout"] == 0:
+            if last['atr'] < (atr_avg * 0.9) and last['Volume'] < last['vol_sma'] and price_spread < 0.08:
+                setup_type = "VCP Pattern"
+                score_components["Breakout"] = 18
+                explanations.append("VCP Tightness Detected (Vol/Price Contraction)")
+            elif 0.98 <= (last['Close'] / last['ema50']) <= 1.02:
+                setup_type = "Pullback to EMA50"
+                score_components["Breakout"] = 15
+                explanations.append("Healthy Pullback to EMA50")
 
         explanations.append(f"Setup: {score_components['Breakout']}/20 ({setup_type})")
 
@@ -99,7 +105,7 @@ class InstitutionalEngine:
             mkt_ret = (self.mkt['Close'].iloc[-1] / self.mkt['Close'].iloc[-lookback_rs]) - 1
             if stock_ret > mkt_ret:
                 score_components["Sector"] = 5
-                explanations.append("RS Positive (Outperforming)")
+                explanations.append("RS Positive (Outperforming Nifty)")
             else:
                 score_components["Sector"] = 2
 
