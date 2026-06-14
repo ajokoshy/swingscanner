@@ -86,7 +86,7 @@ if st.sidebar.button("🚀 Run Full NSE500 Scan"):
                     ON CONFLICT ON CONSTRAINT _symbol_date_uc DO NOTHING
                 """)
                 try:
-                    with db_engine.connect() as conn:
+                    with db_engine.begin() as conn:
                         conn.execute(text("DELETE FROM pro_scans_v2 WHERE scan_date = :d"), {"d": today})
                         conn.execute(insert_query, final_data_batch)
                         conn.commit()
