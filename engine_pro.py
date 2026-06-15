@@ -1,15 +1,58 @@
 """
 engine_pro.py  —  SwingScanner v2
-Institutional scoring engine.  Logic unchanged from v1; code cleaned up.
+Institutional scoring engine.
+
+pandas_ta removed entirely — replaced with inline implementations of the
+4 functions we actually use (ema, rsi, atr, sma). All pure pandas/numpy math.
+This eliminates the numba → llvmlite chain that breaks on Python 3.14.
 """
 
 import logging
 
 import pandas as pd
-import pandas_ta as ta
 
 logger = logging.getLogger(__name__)
 
+
+# ---------------------------------------------------------------------------
+# Inline indicator implementations (replaces pandas_ta dependency)
+# ---------------------------------------------------------------------------
+
+def _ema(series: pd.Series, length: int) -> pd.Series:
+    """Exponential Moving Average."""
+    return series.ewm(span=length, adjust=False, min_periods=length).mean()
+
+
+def _sma(series: pd.Series, length: int) -> pd.Series:
+    """Simple Moving Average."""
+    return series.rolling(window=length, min_periods=length).mean()
+
+
+def _rsi(series: pd.Series, length: int = 14) -> pd.Series:
+    """Relative Strength Index (Wilder smoothing)."""
+    delta = series.diff()
+    gain  = delta.clip(lower=0)
+    loss  = (-delta.clip(upper=0))
+    avg_gain = gain.ewm(alpha=1 / length, adjust=False, min_periods=length).mean()
+    avg_loss = loss.ewm(alpha=1 / length, adjust=False, min_periods=length).mean()
+    rs = avg_gain / avg_loss.replace(0, 1e-10)
+    return 100 - (100 / (1 + rs))
+
+
+def _atr(high: pd.Series, low: pd.Series, close: pd.Series, length: int = 14) -> pd.Series:
+    """Average True Range (Wilder smoothing)."""
+    prev_close = close.shift(1)
+    tr = pd.concat([
+        high - low,
+        (high - prev_close).abs(),
+        (low  - prev_close).abs(),
+    ], axis=1).max(axis=1)
+    return tr.ewm(alpha=1 / length, adjust=False, min_periods=length).mean()
+
+
+# ---------------------------------------------------------------------------
+# Engine
+# ---------------------------------------------------------------------------
 
 class InstitutionalEngine:
     def __init__(self, stock_df: pd.DataFrame, market_df: pd.DataFrame, midcap_df: pd.DataFrame):
@@ -17,26 +60,24 @@ class InstitutionalEngine:
         self.mkt = market_df.copy()
         self.mid = midcap_df.copy()
 
-    # ------------------------------------------------------------------
     def _calculate_indicators(self, df: pd.DataFrame) -> pd.DataFrame:
-        df["ema20"]  = ta.ema(df["Close"], length=20)
-        df["ema50"]  = ta.ema(df["Close"], length=50)
-        df["ema200"] = ta.ema(df["Close"], length=200)
-        df["rsi"]    = ta.rsi(df["Close"], length=14)
-        df["atr"]    = ta.atr(df["High"], df["Low"], df["Close"], length=14)
-        df["vol_sma"] = ta.sma(df["Volume"], length=20)
+        df["ema20"]   = _ema(df["Close"], 20)
+        df["ema50"]   = _ema(df["Close"], 50)
+        df["ema200"]  = _ema(df["Close"], 200)
+        df["rsi"]     = _rsi(df["Close"], 14)
+        df["atr"]     = _atr(df["High"], df["Low"], df["Close"], 14)
+        df["vol_sma"] = _sma(df["Volume"], 20)
 
-        # Shifted highs (no look-ahead bias)
+        # Shifted highs — no look-ahead bias
         df["h20"]  = df["High"].rolling(window=20).max().shift(1)
         df["h50"]  = df["High"].rolling(window=50).max().shift(1)
         df["h252"] = df["High"].rolling(window=252).max().shift(1)
 
         return df.dropna(subset=["ema200", "rsi", "atr"])
 
-    # ------------------------------------------------------------------
     def get_contextual_score(self) -> tuple[int, str, str]:
         """
-        Score a stock setup on 100 points across 6 components:
+        Score a stock setup 0–100 across 6 components:
           Trend (30) · Momentum (20) · Volume (20) · Breakout/Setup (20)
           Market Regime (5) · Relative Strength (5)
 
@@ -92,10 +133,9 @@ class InstitutionalEngine:
             scores["Breakout"] = 10
             setup_type = "20-Day High Breakout"
 
-        # VCP / Pullback only if no breakout triggered
         if scores["Breakout"] == 0:
-            lookback    = min(10, len(self.df))
-            atr_avg     = self.df["atr"].iloc[-lookback:-1].mean()
+            lookback     = min(10, len(self.df))
+            atr_avg      = self.df["atr"].iloc[-lookback:-1].mean()
             price_spread = (
                 self.df["High"].iloc[-lookback:].max()
                 / self.df["Low"].iloc[-lookback:].min()
