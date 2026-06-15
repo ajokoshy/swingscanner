@@ -1,6 +1,5 @@
 streamlit>=1.37.0
 pandas>=2.0.0
-pandas_ta==0.4.71b0 --no-deps
 numpy>=1.26.0
 yfinance>=0.2.40
 yahooquery>=2.3.7
