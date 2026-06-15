@@ -1,113 +1,139 @@
-import pandas_ta as ta
-import numpy as np
+"""
+engine_pro.py  —  SwingScanner v2
+Institutional scoring engine.  Logic unchanged from v1; code cleaned up.
+"""
+
+import logging
+
 import pandas as pd
+import pandas_ta as ta
+
+logger = logging.getLogger(__name__)
+
 
 class InstitutionalEngine:
-    def __init__(self, stock_df, market_df, midcap_df):
-        # We work with copies to avoid modifying original data
-        self.df = stock_df.copy()
+    def __init__(self, stock_df: pd.DataFrame, market_df: pd.DataFrame, midcap_df: pd.DataFrame):
+        self.df  = stock_df.copy()
         self.mkt = market_df.copy()
         self.mid = midcap_df.copy()
 
-    def calculate_indicators(self, df):
-        # Indicator suite
-        df['ema20'] = ta.ema(df['Close'], length=20)
-        df['ema50'] = ta.ema(df['Close'], length=50)
-        df['ema200'] = ta.ema(df['Close'], length=200)
-        df['rsi'] = ta.rsi(df['Close'], length=14)
-        df['atr'] = ta.atr(df['High'], df['Low'], df['Close'], length=14)
-        df['vol_sma'] = ta.sma(df['Volume'], length=20)
+    # ------------------------------------------------------------------
+    def _calculate_indicators(self, df: pd.DataFrame) -> pd.DataFrame:
+        df["ema20"]  = ta.ema(df["Close"], length=20)
+        df["ema50"]  = ta.ema(df["Close"], length=50)
+        df["ema200"] = ta.ema(df["Close"], length=200)
+        df["rsi"]    = ta.rsi(df["Close"], length=14)
+        df["atr"]    = ta.atr(df["High"], df["Low"], df["Close"], length=14)
+        df["vol_sma"] = ta.sma(df["Volume"], length=20)
 
-        # Breakout Reference Levels (Shifted by 1 to avoid look-ahead bias)
-        df['h20'] = df['High'].rolling(window=20).max().shift(1)
-        df['h50'] = df['High'].rolling(window=50).max().shift(1)
-        df['h252'] = df['High'].rolling(window=252).max().shift(1)
+        # Shifted highs (no look-ahead bias)
+        df["h20"]  = df["High"].rolling(window=20).max().shift(1)
+        df["h50"]  = df["High"].rolling(window=50).max().shift(1)
+        df["h252"] = df["High"].rolling(window=252).max().shift(1)
 
-        # Drop rows where critical indicators (EMA200) haven't formed yet
-        return df.dropna(subset=['ema200', 'rsi', 'atr'])
+        return df.dropna(subset=["ema200", "rsi", "atr"])
 
-    def get_contextual_score(self):
-        """Institutional Scoring Engine (100 Points) with VCP Tightness Logic"""
-        self.df = self.calculate_indicators(self.df)
-        self.mkt = self.calculate_indicators(self.mkt)
+    # ------------------------------------------------------------------
+    def get_contextual_score(self) -> tuple[int, str, str]:
+        """
+        Score a stock setup on 100 points across 6 components:
+          Trend (30) · Momentum (20) · Volume (20) · Breakout/Setup (20)
+          Market Regime (5) · Relative Strength (5)
 
-        # 1. SAFETY CHECK: Ensure we have at least some valid data after indicators
+        Returns (score, setup_type, explanation_string)
+        """
+        self.df  = self._calculate_indicators(self.df)
+        self.mkt = self._calculate_indicators(self.mkt)
+
         if len(self.df) < 5 or len(self.mkt) < 5:
-            return 0, "Insufficient Data", "Stock history too short for institutional analysis"
+            return 0, "Insufficient Data", "Stock history too short for analysis"
 
-        last = self.df.iloc[-1]
+        last     = self.df.iloc[-1]
         mkt_last = self.mkt.iloc[-1]
 
-        score_components = {"Trend": 0, "Momentum": 0, "Volume": 0, "Breakout": 0, "Market": 0, "Sector": 0}
+        scores       = {"Trend": 0, "Momentum": 0, "Volume": 0, "Breakout": 0, "Market": 0, "RS": 0}
         explanations = []
 
-        # 2. TREND (30 Points)
-        if last['Close'] > last['ema200']: score_components["Trend"] += 15
-        if last['ema20'] > last['ema50'] > last['ema200']: score_components["Trend"] += 15
-        explanations.append(f"Trend: {score_components['Trend']}/30")
+        # ── 1. Trend (30 pts) ─────────────────────────────────────────────
+        if last["Close"] > last["ema200"]:
+            scores["Trend"] += 15
+        if last["ema20"] > last["ema50"] > last["ema200"]:
+            scores["Trend"] += 15
+        explanations.append(f"Trend: {scores['Trend']}/30")
 
-        # 3. MOMENTUM (20 Points)
-        rsi_val = last['rsi']
-        if 55 <= rsi_val <= 70: score_components["Momentum"] = 20
-        elif 45 <= rsi_val < 55: score_components["Momentum"] = 10
-        explanations.append(f"Momentum: {score_components['Momentum']}/20")
+        # ── 2. Momentum (20 pts) ──────────────────────────────────────────
+        rsi = last["rsi"]
+        if 55 <= rsi <= 70:
+            scores["Momentum"] = 20
+        elif 45 <= rsi < 55:
+            scores["Momentum"] = 10
+        explanations.append(f"Momentum (RSI {rsi:.0f}): {scores['Momentum']}/20")
 
-        # 4. VOLUME (20 Points)
-        if last['Volume'] > (last['vol_sma'] * 1.5):
-            score_components["Volume"] = 20
-            explanations.append("Institutional Vol Spike")
-        elif last['Volume'] > last['vol_sma']:
-            score_components["Volume"] = 10
-        explanations.append(f"Volume: {score_components['Volume']}/20")
+        # ── 3. Volume (20 pts) ────────────────────────────────────────────
+        if last["Volume"] > last["vol_sma"] * 1.5:
+            scores["Volume"] = 20
+            explanations.append("Institutional vol spike (1.5× avg)")
+        elif last["Volume"] > last["vol_sma"]:
+            scores["Volume"] = 10
+            explanations.append("Above-avg volume")
+        else:
+            explanations.append("Volume: below avg")
 
-        # 5. BREAKOUT & SETUP DETECTION (20 Points)
+        # ── 4. Breakout / Setup detection (20 pts) ────────────────────────
         setup_type = "Base Formation"
-        
-        # Priority 1: Multi-day High Breakouts
-        if len(self.df) >= 252 and last['Close'] > last['h252']:
-            score_components["Breakout"] = 20
+
+        if len(self.df) >= 252 and last["Close"] > last["h252"]:
+            scores["Breakout"] = 20
             setup_type = "52-Week High Breakout"
-        elif last['Close'] > last['h50']:
-            score_components["Breakout"] = 15
+        elif last["Close"] > last["h50"]:
+            scores["Breakout"] = 15
             setup_type = "50-Day High Breakout"
-        elif last['Close'] > last['h20']:
-            score_components["Breakout"] = 10
+        elif last["Close"] > last["h20"]:
+            scores["Breakout"] = 10
             setup_type = "20-Day High Breakout"
 
-        # Priority 2: VCP Logic (ATR, Volume & Price Tightness)
-        # Only applies if a major breakout wasn't already triggered.
-        lookback = min(10, len(self.df))
-        atr_avg = self.df['atr'].iloc[-lookback:-1].mean()
-        # Calculate the high-to-low range over the last 10 days
-        price_spread = (self.df['High'].iloc[-lookback:].max() / self.df['Low'].iloc[-lookback:].min()) - 1
-        
-        if score_components["Breakout"] == 0:
-            if last['atr'] < (atr_avg * 0.9) and last['Volume'] < last['vol_sma'] and price_spread < 0.08:
+        # VCP / Pullback only if no breakout triggered
+        if scores["Breakout"] == 0:
+            lookback    = min(10, len(self.df))
+            atr_avg     = self.df["atr"].iloc[-lookback:-1].mean()
+            price_spread = (
+                self.df["High"].iloc[-lookback:].max()
+                / self.df["Low"].iloc[-lookback:].min()
+            ) - 1
+
+            if (
+                last["atr"] < atr_avg * 0.9
+                and last["Volume"] < last["vol_sma"]
+                and price_spread < 0.08
+            ):
+                scores["Breakout"] = 18
                 setup_type = "VCP Pattern"
-                score_components["Breakout"] = 18
-                explanations.append("VCP Tightness Detected (Vol/Price Contraction)")
-            elif 0.98 <= (last['Close'] / last['ema50']) <= 1.02:
+                explanations.append("VCP: vol+price contraction detected")
+            elif 0.98 <= (last["Close"] / last["ema50"]) <= 1.02:
+                scores["Breakout"] = 15
                 setup_type = "Pullback to EMA50"
-                score_components["Breakout"] = 15
-                explanations.append("Healthy Pullback to EMA50")
+                explanations.append("Healthy pullback to EMA50")
 
-        explanations.append(f"Setup: {score_components['Breakout']}/20 ({setup_type})")
+        explanations.append(f"Setup ({setup_type}): {scores['Breakout']}/20")
 
-        # 6. MARKET REGIME (5 Points)
-        if mkt_last['Close'] > mkt_last['ema200']: score_components["Market"] += 3
-        if mkt_last['rsi'] > 50: score_components["Market"] += 2
-        explanations.append(f"Market: {score_components['Market']}/5")
+        # ── 5. Market regime (5 pts) ──────────────────────────────────────
+        if mkt_last["Close"] > mkt_last["ema200"]:
+            scores["Market"] += 3
+        if mkt_last["rsi"] > 50:
+            scores["Market"] += 2
+        explanations.append(f"Market regime: {scores['Market']}/5")
 
-        # 7. SECTOR / RELATIVE STRENGTH (5 Points)
+        # ── 6. Relative strength (5 pts) ──────────────────────────────────
         lookback_rs = min(63, len(self.df), len(self.mkt))
         if lookback_rs > 5:
-            stock_ret = (self.df['Close'].iloc[-1] / self.df['Close'].iloc[-lookback_rs]) - 1
-            mkt_ret = (self.mkt['Close'].iloc[-1] / self.mkt['Close'].iloc[-lookback_rs]) - 1
+            stock_ret = (self.df["Close"].iloc[-1] / self.df["Close"].iloc[-lookback_rs]) - 1
+            mkt_ret   = (self.mkt["Close"].iloc[-1] / self.mkt["Close"].iloc[-lookback_rs]) - 1
             if stock_ret > mkt_ret:
-                score_components["Sector"] = 5
-                explanations.append("RS Positive (Outperforming Nifty)")
+                scores["RS"] = 5
+                explanations.append("RS: outperforming Nifty (63d)")
             else:
-                score_components["Sector"] = 2
+                scores["RS"] = 2
+                explanations.append("RS: lagging Nifty (63d)")
 
-        total_score = sum(score_components.values())
-        return int(total_score), setup_type, " | ".join(explanations)
+        total = sum(scores.values())
+        return int(total), setup_type, " | ".join(explanations)

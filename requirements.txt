@@ -9,3 +9,4 @@ python-dotenv==1.0.1
 numpy>=2.2.6
 requests==2.32.3
 curl_cffi==0.7.2
+pyarrow>=16.0.0
