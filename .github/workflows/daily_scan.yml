@@ -1,1 +1,47 @@
-test
+name: Daily NSE Market Scan
+
+on:
+  # 7:30 PM IST = 14:00 UTC — market closes 3:30 PM IST; this gives Yahoo
+  # ~4 hours to finalise all NSE EOD data before we fetch it.
+  schedule:
+    - cron: '00 14 * * 1-5'
+
+  # Manual trigger from GitHub Actions UI or from the Streamlit "Trigger Scan" button
+  workflow_dispatch:
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30     # kill if something hangs beyond 30 min
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Cache pip dependencies
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('requirements.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Run scanner
+        env:
+          DATABASE_URL:     ${{ secrets.DATABASE_URL }}
+          EMAIL_USER:       ${{ secrets.EMAIL_USER }}
+          EMAIL_PASS:       ${{ secrets.EMAIL_PASS }}
+          RECEIVER_EMAIL:   ${{ secrets.RECEIVER_EMAIL }}
+          # Optional: set a writable path for Bhavcopy cache across runs
+          BHAVCOPY_CACHE_DIR: /tmp/bhavcopy_cache
+        run: python scanner_cron.py
