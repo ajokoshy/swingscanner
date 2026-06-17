@@ -100,6 +100,20 @@ def get_last_run_status() -> dict | None:
 
 
 # ---------------------------------------------------------------------------
+# Time helper
+# ---------------------------------------------------------------------------
+
+def _to_ist(utc_str: str) -> str:
+    """Convert a GitHub API UTC timestamp (2026-06-15T14:15:00Z) to IST string."""
+    try:
+        dt_utc = datetime.strptime(utc_str[:19], "%Y-%m-%dT%H:%M:%S").replace(tzinfo=timezone.utc)
+        dt_ist = dt_utc + IST_OFFSET
+        return dt_ist.strftime("%-d %b %Y, %I:%M %p IST")
+    except Exception:
+        return utc_str[:16].replace("T", " ") + " UTC"
+
+
+# ---------------------------------------------------------------------------
 # Sidebar
 # ---------------------------------------------------------------------------
 
@@ -130,9 +144,9 @@ with st.sidebar.expander("📊 Last Scan Status", expanded=True):
                 "in_progress": "⏳", "queued": "🕐"}.get(status, "❓")
         st.write(f"**Status:** {icon} {status} / {conclusion}")
         if started:
-            st.write(f"**Started:** {started[:16].replace('T', ' ')} UTC")
+            st.write(f"**Started:** {_to_ist(started)}")
         if finished and status == "completed":
-            st.write(f"**Finished:** {finished[:16].replace('T', ' ')} UTC")
+            st.write(f"**Finished:** {_to_ist(finished)}")
         if GH_OWNER and GH_REPO:
             st.markdown(
                 f"[View on GitHub](https://github.com/{GH_OWNER}/{GH_REPO}/actions)"
