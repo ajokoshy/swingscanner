@@ -1,10 +1,10 @@
 name: Daily NSE Market Scan
 
 on:
-  # 7:30 PM IST = 14:00 UTC — market closes 3:30 PM IST; this gives Yahoo
-  # ~4 hours to finalise all NSE EOD data before we fetch it.
+  # 8:04 PM IST = 14:34 UTC — market closes 3:30 PM IST; this gives Yahoo
+  # ~4.5 hours to finalise all NSE EOD data before we fetch it.
   schedule:
-    - cron: '00 14 * * 1-5'
+    - cron: '34 14 * * 1-5'
 
   # Manual trigger from GitHub Actions UI or from the Streamlit "Trigger Scan" button
   workflow_dispatch:
