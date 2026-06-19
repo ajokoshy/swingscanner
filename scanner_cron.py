@@ -172,7 +172,7 @@ def send_email(setups: list, scan_date: date_type) -> None:
 
 def run_automation() -> None:
     try:
-        # Use IST date — cron runs at 14:00 UTC = 19:30 IST, same calendar day
+        # Use IST date — cron runs at 14:34 UTC = 20:04 IST, same calendar day
         from datetime import timedelta
         ist_now = datetime.now(timezone.utc) + timedelta(hours=IST_OFFSET_HRS)
         today   = ist_now.date()

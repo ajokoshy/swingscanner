@@ -162,7 +162,7 @@ st.sidebar.info(
     "3. Setups ≥ 70 saved to database\n"
     "4. Email report sent to you\n"
     "5. This dashboard shows **today's results only**\n\n"
-    "Scan runs daily at 7:30 PM IST automatically."
+    "Scan runs daily at 8:04 PM IST automatically."
 )
 
 # ---------------------------------------------------------------------------
@@ -266,7 +266,7 @@ try:
             f"⏳ **No scan has run today ({today} IST) yet.**\n\n"
             "Setups from previous scans are **not shown** here to avoid acting on stale signals. "
             "A stock that was bullish yesterday may have broken down today.\n\n"
-            "The daily scan runs automatically at **7:30 PM IST**. "
+            "The daily scan runs automatically at **8:04 PM IST**. "
             "To scan right now, click **'Trigger Full NSE500 Scan'** in the sidebar."
         )
 

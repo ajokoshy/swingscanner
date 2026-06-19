@@ -240,9 +240,9 @@ After a few days of running, you'll have a complete offline history as insurance
 
 No. The `pro_scans_v2` table schema is identical. The new `sector_strength` column is `NULL`-able and already handled. No migrations needed.
 
-**Q: The cron changed from 5:00 PM to 7:30 PM IST — why?**
+**Q: The cron changed from 5:00 PM to 8:04 PM IST — why?**
 
-Yahoo Finance sometimes takes 1–2 hours to finalize NSE EOD data after market close (3:30 PM IST). Running at 5:00 PM occasionally fetched incomplete or stale data. 7:30 PM gives Yahoo 4 hours to settle.
+Yahoo Finance sometimes takes 1–2 hours to finalize NSE EOD data after market close (3:30 PM IST). Running at 5:00 PM occasionally fetched incomplete or stale data. 8:04 PM gives Yahoo ~4.5 hours to settle.
 
 **Q: What if I want to run the scan locally to test?**
 
