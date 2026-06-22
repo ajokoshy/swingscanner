@@ -165,6 +165,39 @@ st.sidebar.info(
     "Scan runs daily at 8:04 PM IST automatically."
 )
 
+st.sidebar.markdown("---")
+
+with st.sidebar.expander("🗑️ Clean Up Old Data"):
+    now_ist_cleanup = datetime.now(timezone.utc) + IST_OFFSET
+    today_cleanup   = now_ist_cleanup.date()
+
+    with db_engine.connect() as conn:
+        old_count = conn.execute(
+            text("SELECT COUNT(*) AS c FROM pro_scans_v2 WHERE scan_date < :d"),
+            {"d": today_cleanup},
+        ).mappings().first()["c"]
+
+    if old_count == 0:
+        st.caption("No rows older than today. Nothing to clean up.")
+    else:
+        st.write(f"**{old_count}** rows from before today ({today_cleanup}) exist.")
+        st.caption("This permanently deletes them. Today's data is never touched.")
+
+        confirm = st.checkbox(f"Yes, delete all {old_count} old rows", key="confirm_cleanup")
+
+        if st.button("🗑️ Delete Old Entries", disabled=not confirm, use_container_width=True):
+            with db_engine.connect() as conn:
+                result = conn.execute(
+                    text("DELETE FROM pro_scans_v2 WHERE scan_date < :d"),
+                    {"d": today_cleanup},
+                )
+                conn.commit()
+                deleted = result.rowcount
+            st.success(f"✅ Deleted {deleted} rows older than {today_cleanup}.")
+            st.session_state["confirm_cleanup"] = False
+            time.sleep(1.5)
+            st.rerun()
+
 # ---------------------------------------------------------------------------
 # Main dashboard
 # ---------------------------------------------------------------------------
