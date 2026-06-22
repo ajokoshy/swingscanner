@@ -194,7 +194,7 @@ with st.sidebar.expander("🗑️ Clean Up Old Data"):
                 conn.commit()
                 deleted = result.rowcount
             st.success(f"✅ Deleted {deleted} rows older than {today_cleanup}.")
-            st.session_state["confirm_cleanup"] = False
+            st.session_state.pop("confirm_cleanup", None)
             time.sleep(1.5)
             st.rerun()
 
