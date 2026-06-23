@@ -68,4 +68,28 @@ class ProScanResult(Base):
     __table_args__ = (
         UniqueConstraint("symbol", "scan_date", name="_symbol_date_uc"),
     )
+
+
+# ---------------------------------------------------------------------------
+# Init
+# ---------------------------------------------------------------------------
+
+def init_db() -> None:
+    """Create all tables if they don't exist yet, and migrate new columns."""
+    Base.metadata.create_all(bind=engine)
+
+    # Migrate: add entry_score and entry_label columns if they don't exist yet
+    # (safe to run on every startup — ALTER TABLE IF NOT EXISTS is idempotent on Postgres)
+    migrations = [
+        "ALTER TABLE pro_scans_v2 ADD COLUMN IF NOT EXISTS entry_score INTEGER",
+        "ALTER TABLE pro_scans_v2 ADD COLUMN IF NOT EXISTS entry_label VARCHAR",
+    ]
+    with engine.connect() as conn:
+        for sql in migrations:
+            try:
+                conn.execute(text(sql))
+            except Exception:
+                pass
+        conn.commit()
+
     logger.info("Database tables verified / migrated.")
