@@ -238,40 +238,90 @@ try:
     if today_rows:
         rows = today_rows
 
-        elite  = [r for r in rows if r["score"] >= 85]
-        strong = [r for r in rows if 75 <= r["score"] < 85]
+        elite       = [r for r in rows if r["score"] >= 85]
+        strong      = [r for r in rows if 75 <= r["score"] < 85]
+        entry_ready = [r for r in rows if (r.get("entry_score") or 0) == 5]
 
-        m1, m2, m3, m4 = st.columns(4)
+        m1, m2, m3, m4, m5 = st.columns(5)
         m1.metric("Today's Setups", len(rows))
         m2.metric("🔥 Elite (85+)", len(elite))
         m3.metric("⭐ Strong (75–84)", len(strong))
-        m4.metric("Avg Score", f"{sum(r['score'] for r in rows) / len(rows):.1f}")
+        m4.metric("✅ Entry Ready", len(entry_ready))
+        m5.metric("Avg Score", f"{sum(r['score'] for r in rows) / len(rows):.1f}")
 
-        st.success(f"✅ Scan completed for **{today}** — {len(rows)} active setups found")
+        st.success(f"✅ Scan completed for **{today}** — {len(rows)} setups · {len(entry_ready)} entry-ready now")
 
-        # Filters
-        fc1, fc2 = st.columns(2)
+        # Entry-ready highlight box
+        if entry_ready:
+            with st.container():
+                st.markdown("### 🎯 Entry-Ready Now — Buy Tomorrow")
+                st.caption(
+                    "These stocks pass ALL 5 entry conditions: not extended · RSI in buy zone · "
+                    "volatility contracting · near support · R/R ≥ 2. These are your best candidates."
+                )
+                for res in sorted(entry_ready, key=lambda x: x["score"], reverse=True):
+                    badge  = "🔥" if res["score"] >= 85 else "⭐"
+                    header = (
+                        f"{badge} **{res['symbol']}** — Score {res['score']}/100 · "
+                        f"{res['setup_type']} · Entry ₹{res['entry']} · "
+                        f"SL ₹{res['stop_loss']} · RR {res['risk_reward']}x"
+                    )
+                    with st.expander(header, expanded=len(entry_ready) <= 5):
+                        c1, c2, c3 = st.columns([1, 1, 1.5])
+                        with c1:
+                            st.markdown("**📍 Trade Levels**")
+                            st.code(
+                                f"Entry:       ₹{res['entry']}\n"
+                                f"Stop Loss:   ₹{res['stop_loss']}\n"
+                                f"Risk/Reward: {res['risk_reward']}x"
+                            )
+                        with c2:
+                            st.markdown("**🎯 Targets**")
+                            st.success(f"T1 (2R): ₹{res['target_1']}")
+                            st.success(f"T2 (3R): ₹{res['target_2']}")
+                            st.success(f"T3 (5R): ₹{res['target_3']}")
+                        with c3:
+                            st.markdown("**✅ Entry Quality: 5/5**")
+                            st.caption(str(res.get("entry_label", "")))
+                            for p in str(res["explanation"]).split(" | "):
+                                st.write(f"• {p}")
+
+        st.markdown("---")
+
+        # All setups with filters
+        fc1, fc2, fc3 = st.columns(3)
         with fc1:
             setup_types   = sorted({r["setup_type"] for r in rows})
             selected_type = st.selectbox("Filter by setup", ["All"] + setup_types)
         with fc2:
             regime_types    = sorted({r["market_regime"] for r in rows})
             selected_regime = st.selectbox("Filter by regime", ["All"] + regime_types)
+        with fc3:
+            entry_filter = st.selectbox(
+                "Filter by entry",
+                ["All setups", "Entry ready (5/5)", "Almost ready (4/5)"],
+            )
 
         filtered = [
             r for r in rows
             if (selected_type   == "All" or r["setup_type"]    == selected_type)
             and (selected_regime == "All" or r["market_regime"] == selected_regime)
         ]
+        if entry_filter == "Entry ready (5/5)":
+            filtered = [r for r in filtered if (r.get("entry_score") or 0) == 5]
+        elif entry_filter == "Almost ready (4/5)":
+            filtered = [r for r in filtered if (r.get("entry_score") or 0) >= 4]
 
-        st.markdown(f"### 🎯 Today's setups ({len(filtered)} shown)")
+        st.markdown(f"### 📋 All setups ({len(filtered)} shown)")
 
         for res in filtered:
+            escore = r.get("entry_score") or 0 if (r := res) else 0
             badge  = "🔥 ELITE" if res["score"] >= 85 else ("⭐ STRONG" if res["score"] >= 75 else "✅")
+            entry_badge = "✅" if escore == 5 else (f"⚠️ {escore}/5" if escore >= 4 else f"🔶 {escore}/5")
             header = (
                 f"{badge}  **{res['symbol']}**  |  "
                 f"Score: **{res['score']}/100**  |  {res['setup_type']}  |  "
-                f"{res['market_regime']}"
+                f"Entry: {entry_badge}"
             )
             with st.expander(header):
                 c1, c2, c3 = st.columns([1, 1, 1.5])
@@ -288,10 +338,10 @@ try:
                     st.success(f"T2 (3R): ₹{res['target_2']}")
                     st.success(f"T3 (5R): ₹{res['target_3']}")
                 with c3:
-                    st.markdown("**📊 Score Breakdown**")
+                    st.markdown(f"**📊 Entry Quality: {escore}/5**")
+                    st.caption(str(res.get("entry_label", "Not evaluated")))
                     for p in str(res["explanation"]).split(" | "):
                         st.write(f"• {p}")
-                    st.caption(f"Scanned: {res['scan_date']}  |  Regime: {res['market_regime']}")
 
     # ── TODAY: no scan yet ────────────────────────────────────────────────
     else:

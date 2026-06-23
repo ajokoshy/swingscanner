@@ -62,6 +62,8 @@ class ProScanResult(Base):
     target_3       = Column(Float)
     risk_reward    = Column(Float)
     explanation    = Column(Text)
+    entry_score    = Column(Integer, nullable=True)   # 0-5: how many entry conditions pass
+    entry_label    = Column(String,  nullable=True)   # human-readable entry verdict
 
     __table_args__ = (
         UniqueConstraint("symbol", "scan_date", name="_symbol_date_uc"),
@@ -73,6 +75,21 @@ class ProScanResult(Base):
 # ---------------------------------------------------------------------------
 
 def init_db() -> None:
-    """Create all tables if they don't exist yet."""
+    """Create all tables if they don't exist yet, and migrate new columns."""
     Base.metadata.create_all(bind=engine)
-    logger.info("Database tables verified / created.")
+
+    # Migrate: add entry_score and entry_label columns if they don't exist yet
+    # (safe to run on every startup — ALTER TABLE IF NOT EXISTS is idempotent on Postgres)
+    migrations = [
+        "ALTER TABLE pro_scans_v2 ADD COLUMN IF NOT EXISTS entry_score INTEGER",
+        "ALTER TABLE pro_scans_v2 ADD COLUMN IF NOT EXISTS entry_label VARCHAR",
+    ]
+    with engine.connect() as conn:
+        for sql in migrations:
+            try:
+                conn.execute(text(sql))
+            except Exception:
+                pass
+        conn.commit()
+
+    logger.info("Database tables verified / migrated.")
