@@ -1,6 +1,9 @@
 """
 database_manager.py  —  SwingScanner v2
-Schema and connection management.  Compatible with Neon (serverless Postgres).
+Schema and connection management. Compatible with Neon (serverless Postgres).
+
+Migrations (ALTER TABLE) are intentionally NOT run here — they run once
+in scanner_cron.py at scan startup, not on every Streamlit page load.
 """
 
 import logging
@@ -8,9 +11,10 @@ import os
 import sys
 
 from sqlalchemy import (
-    Column, Date, Float, Integer, String, Text, UniqueConstraint, create_engine,
+    Column, Date, Float, Integer, String, Text,
+    UniqueConstraint, create_engine, text,
 )
-from sqlalchemy.orm import declarative_base, sessionmaker
+from sqlalchemy.orm import declarative_base
 
 logger = logging.getLogger(__name__)
 
@@ -23,7 +27,7 @@ if not DATABASE_URL:
     logger.critical("DATABASE_URL environment variable is not set.")
     sys.exit(1)
 
-# Heroku / Neon legacy URL scheme fix
+# Neon / legacy Heroku URL scheme fix
 if DATABASE_URL.startswith("postgres://"):
     DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
 
@@ -35,51 +39,54 @@ try:
         max_overflow=10,
         pool_recycle=300,       # recycle every 5 min (prevents Neon idle disconnects)
     )
-    SessionLocal = sessionmaker(bind=engine)
     Base = declarative_base()
 except Exception as exc:
     logger.critical("Failed to create database engine: %s", exc)
     sys.exit(1)
 
 # ---------------------------------------------------------------------------
-# Models
+# Schema
 # ---------------------------------------------------------------------------
 
 class ProScanResult(Base):
     __tablename__ = "pro_scans_v2"
 
-    id             = Column(Integer, primary_key=True)
-    symbol         = Column(String, index=True, nullable=False)
-    scan_date      = Column(Date, index=True, nullable=False)
-    score          = Column(Integer, nullable=False)
-    setup_type     = Column(String)
-    market_regime  = Column(String)
-    sector_strength = Column(Float, nullable=True)   # optional; not always populated
-    entry          = Column(Float)
-    stop_loss      = Column(Float)
-    target_1       = Column(Float)
-    target_2       = Column(Float)
-    target_3       = Column(Float)
-    risk_reward    = Column(Float)
-    explanation    = Column(Text)
-    entry_score    = Column(Integer, nullable=True)   # 0-5: how many entry conditions pass
-    entry_label    = Column(String,  nullable=True)   # human-readable entry verdict
+    id            = Column(Integer, primary_key=True)
+    symbol        = Column(String,  index=True, nullable=False)
+    scan_date     = Column(Date,    index=True, nullable=False)
+    score         = Column(Integer, nullable=False)
+    setup_type    = Column(String)
+    market_regime = Column(String)
+    entry         = Column(Float)
+    stop_loss     = Column(Float)
+    target_1      = Column(Float)
+    target_2      = Column(Float)
+    target_3      = Column(Float)
+    risk_reward   = Column(Float)
+    explanation   = Column(Text)
+    entry_score   = Column(Integer, nullable=True)  # 0–5: entry conditions passed
+    entry_label   = Column(String,  nullable=True)  # human-readable entry verdict
 
     __table_args__ = (
         UniqueConstraint("symbol", "scan_date", name="_symbol_date_uc"),
     )
 
-
 # ---------------------------------------------------------------------------
-# Init
+# Init — creates tables; does NOT run migrations (that's scanner_cron's job)
 # ---------------------------------------------------------------------------
 
 def init_db() -> None:
-    """Create all tables if they don't exist yet, and migrate new columns."""
+    """Create tables if they don't exist. Safe to call on every Streamlit load."""
     Base.metadata.create_all(bind=engine)
+    logger.info("Database ready.")
 
-    # Migrate: add entry_score and entry_label columns if they don't exist yet
-    # (safe to run on every startup — ALTER TABLE IF NOT EXISTS is idempotent on Postgres)
+
+def run_migrations() -> None:
+    """
+    Add new columns if they don't exist yet.
+    Called once per day by scanner_cron.py at scan start — NOT by the UI.
+    Uses IF NOT EXISTS so it's safe to re-run.
+    """
     migrations = [
         "ALTER TABLE pro_scans_v2 ADD COLUMN IF NOT EXISTS entry_score INTEGER",
         "ALTER TABLE pro_scans_v2 ADD COLUMN IF NOT EXISTS entry_label VARCHAR",
@@ -91,5 +98,4 @@ def init_db() -> None:
             except Exception:
                 pass
         conn.commit()
-
-    logger.info("Database tables verified / migrated.")
+    logger.info("Migrations applied.")

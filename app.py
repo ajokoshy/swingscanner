@@ -315,7 +315,7 @@ try:
         st.markdown(f"### 📋 All setups ({len(filtered)} shown)")
 
         for res in filtered:
-            escore = r.get("entry_score") or 0 if (r := res) else 0
+            escore = res.get("entry_score") or 0
             badge  = "🔥 ELITE" if res["score"] >= 85 else ("⭐ STRONG" if res["score"] >= 75 else "✅")
             entry_badge = "✅" if escore == 5 else (f"⚠️ {escore}/5" if escore >= 4 else f"🔶 {escore}/5")
             header = (
