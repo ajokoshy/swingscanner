@@ -100,127 +100,228 @@ def send_email(setups: list, scan_date: date_type) -> None:
     strong_count = sum(1 for s in by_score if 75 <= s["score"] < 85)
 
     msg = MIMEMultipart("alternative")
-    msg["Subject"] = f"NSE Swings {scan_date} — {len(entry_ready)} entry-ready · {len(by_score)} total"
-    msg["From"]    = f"NSE Pro Scanner <{sender_email}>"
-    msg["To"]      = receiver_email
+    msg["Subject"] = (
+        f"NSE Swings {scan_date} — "
+        f"{len(entry_ready)} entry-ready · {len(by_score)} total"
+    )
+    msg["From"] = f"NSE Pro Scanner <{sender_email}>"
+    msg["To"]   = receiver_email
 
-    # ── shared styles ──────────────────────────────────────────────────────
-    TH  = "padding:8px 10px;text-align:left;font-weight:600;white-space:nowrap;"
-    TH_C = "padding:8px 10px;text-align:center;font-weight:600;white-space:nowrap;"
-    TD  = "padding:7px 10px;border-top:1px solid #e0e0e0;"
-    TD_C = "padding:7px 10px;border-top:1px solid #e0e0e0;text-align:center;"
-    TD_R = "padding:7px 10px;border-top:1px solid #e0e0e0;color:#c0392b;"
-    TD_G = "padding:7px 10px;border-top:1px solid #e0e0e0;color:#27ae60;"
+    # ── style constants ────────────────────────────────────────────────────
+    # Using inline border on every cell (not border-collapse tricks) for
+    # maximum compatibility across Gmail, Outlook, Apple Mail, mobile.
+    CELL  = "font-family:Arial,sans-serif;font-size:13px;padding:8px 10px;border:1px solid #d0d0d0;"
+    CELL_C = CELL + "text-align:center;"
+    CELL_R = CELL + "color:#c0392b;"
+    CELL_G = CELL + "color:#27ae60;"
+    HEAD  = CELL + "font-weight:700;color:#ffffff;"
+    HEAD_C = HEAD + "text-align:center;"
 
-    def _er_rows(rows):
+    # ── row builders (use enumerate — NOT .index() which breaks on dupes) ─
+    def _rows_er(rows: list) -> str:
         out = []
-        for s in rows:
-            bg = "#f0faf0" if rows.index(s) % 2 == 0 else "#e8f5e8"
+        for i, s in enumerate(rows):
+            bg = "#f2faf2" if i % 2 == 0 else "#e6f4e6"
             out.append(
-                f'<tr style="background:{bg}">'
-                f'<td style="{TD}"><strong>{s["symbol"]}</strong></td>'
-                f'<td style="{TD_C}">{s["score"]}</td>'
-                f'<td style="{TD}">{s["setup_type"]}</td>'
-                f'<td style="{TD}">₹{s["entry"]}</td>'
-                f'<td style="{TD_R}">₹{s["stop_loss"]}</td>'
-                f'<td style="{TD_G}">₹{s["target_1"]}</td>'
-                f'<td style="{TD_G}">₹{s["target_2"]}</td>'
-                f'<td style="{TD_C}">{s["risk_reward"]}x</td>'
+                f'<tr>'
+                f'<td style="{CELL}background:{bg};"><strong>{s["symbol"]}</strong></td>'
+                f'<td style="{CELL_C}background:{bg};">{s["score"]}</td>'
+                f'<td style="{CELL}background:{bg};">{s["setup_type"]}</td>'
+                f'<td style="{CELL}background:{bg};">&#8377;{s["entry"]}</td>'
+                f'<td style="{CELL_R}background:{bg};">&#8377;{s["stop_loss"]}</td>'
+                f'<td style="{CELL_G}background:{bg};">&#8377;{s["target_1"]}</td>'
+                f'<td style="{CELL_G}background:{bg};">&#8377;{s["target_2"]}</td>'
+                f'<td style="{CELL_C}background:{bg};">{s["risk_reward"]}x</td>'
                 f'</tr>'
             )
         return "".join(out)
 
-    def _ar_rows(rows):
+    def _rows_ar(rows: list) -> str:
         out = []
-        for s in rows:
-            bg = "#fffdf0" if rows.index(s) % 2 == 0 else "#fff8dc"
+        for i, s in enumerate(rows):
+            bg = "#fffef0" if i % 2 == 0 else "#fff8d6"
             out.append(
-                f'<tr style="background:{bg}">'
-                f'<td style="{TD}">{s["symbol"]}</td>'
-                f'<td style="{TD_C}">{s["score"]}</td>'
-                f'<td style="{TD}">{s["setup_type"]}</td>'
-                f'<td style="{TD}">₹{s["entry"]}</td>'
-                f'<td style="{TD_R}">₹{s["stop_loss"]}</td>'
-                f'<td style="{TD_G}">₹{s["target_1"]}</td>'
-                f'<td style="{TD_C}">{s["risk_reward"]}x</td>'
+                f'<tr>'
+                f'<td style="{CELL}background:{bg};"><strong>{s["symbol"]}</strong></td>'
+                f'<td style="{CELL_C}background:{bg};">{s["score"]}</td>'
+                f'<td style="{CELL}background:{bg};">{s["setup_type"]}</td>'
+                f'<td style="{CELL}background:{bg};">&#8377;{s["entry"]}</td>'
+                f'<td style="{CELL_R}background:{bg};">&#8377;{s["stop_loss"]}</td>'
+                f'<td style="{CELL_G}background:{bg};">&#8377;{s["target_1"]}</td>'
+                f'<td style="{CELL_C}background:{bg};">{s["risk_reward"]}x</td>'
                 f'</tr>'
             )
         return "".join(out)
 
-    def _all_rows(rows):
+    def _rows_all(rows: list) -> str:
         out = []
         for i, s in enumerate(rows):
             escore = s.get("entry_score") or 0
-            bg     = "#f0faf0" if escore == 5 else ("#fffdf0" if escore == 4 else ("#ffffff" if i % 2 == 0 else "#f9f9f9"))
-            badge  = "🔥 " if s["score"] >= 85 else ("⭐ " if s["score"] >= 75 else "")
-            eq     = "✅" if escore == 5 else (f"⚠️ {escore}/5" if escore >= 4 else f"{escore}/5")
+            if escore == 5:
+                bg = "#f2faf2"
+            elif escore == 4:
+                bg = "#fffef0"
+            else:
+                bg = "#ffffff" if i % 2 == 0 else "#f7f7f7"
+            badge = "&#128293; " if s["score"] >= 85 else ("&#11088; " if s["score"] >= 75 else "")
+            eq    = "&#9989;" if escore == 5 else (f"&#9888;&#65039; {escore}/5" if escore >= 4 else f"{escore}/5")
             out.append(
-                f'<tr style="background:{bg}">'
-                f'<td style="{TD}">{badge}{s["symbol"]}</td>'
-                f'<td style="{TD_C}">{s["score"]}</td>'
-                f'<td style="{TD}">{s["setup_type"]}</td>'
-                f'<td style="{TD_C}">{eq}</td>'
-                f'<td style="{TD}">₹{s["entry"]}</td>'
-                f'<td style="{TD_R}">₹{s["stop_loss"]}</td>'
-                f'<td style="{TD_G}">₹{s["target_1"]}</td>'
-                f'<td style="{TD_C}">{s["risk_reward"]}x</td>'
+                f'<tr>'
+                f'<td style="{CELL}background:{bg};">{badge}{s["symbol"]}</td>'
+                f'<td style="{CELL_C}background:{bg};">{s["score"]}</td>'
+                f'<td style="{CELL}background:{bg};">{s["setup_type"]}</td>'
+                f'<td style="{CELL_C}background:{bg};">{eq}</td>'
+                f'<td style="{CELL}background:{bg};">&#8377;{s["entry"]}</td>'
+                f'<td style="{CELL_R}background:{bg};">&#8377;{s["stop_loss"]}</td>'
+                f'<td style="{CELL_G}background:{bg};">&#8377;{s["target_1"]}</td>'
+                f'<td style="{CELL_C}background:{bg};">{s["risk_reward"]}x</td>'
                 f'</tr>'
             )
         return "".join(out)
 
-    # ── entry-ready section ────────────────────────────────────────────────
+    def _table(header_row: str, body_rows: str) -> str:
+        """Wraps header + rows in a table with no padding/spacing issues."""
+        return (
+            '<table width="100%" cellpadding="0" cellspacing="0" '
+            'style="border-collapse:collapse;table-layout:auto;">'
+            f'{header_row}{body_rows}'
+            '</table>'
+        )
+
+    # ── section builders ───────────────────────────────────────────────────
+    def _section(title: str, subtitle: str, header_color: str,
+                 bg_color: str, border_color: str, table_html: str) -> str:
+        return (
+            f'<table width="100%" cellpadding="0" cellspacing="0" style="margin:16px 0;">'
+            f'<tr><td style="background:{bg_color};border:2px solid {border_color};'
+            f'border-radius:6px;padding:0;overflow:hidden;">'
+            # title bar
+            f'<table width="100%" cellpadding="0" cellspacing="0">'
+            f'<tr><td style="background:{border_color};padding:12px 14px;">'
+            f'<p style="margin:0;font-size:14px;font-weight:700;color:#ffffff;">{title}</p>'
+            f'<p style="margin:4px 0 0;font-size:11px;color:rgba(255,255,255,0.85);">{subtitle}</p>'
+            f'</td></tr>'
+            # table
+            f'<tr><td style="padding:12px 14px;">{table_html}</td></tr>'
+            f'</table>'
+            f'</td></tr></table>'
+        )
+
+    # ── build sections ─────────────────────────────────────────────────────
     er_section = ""
     if entry_ready:
-        er_section = (
-            '<div style="margin:16px 0;padding:14px;background:#e8f5e8;border-left:4px solid #28a745;border-radius:4px;">' +
-            f'<p style="margin:0 0 10px;font-size:15px;font-weight:600;color:#155724;">✅ Entry-Ready Now — {len(entry_ready)} stock{"s" if len(entry_ready)>1 else ""} (Buy Tomorrow)</p>' +
-            '<p style="margin:0 0 12px;font-size:12px;color:#155724;">All 5 conditions passed: not extended · RSI in buy zone · volatility contracting · near support · R/R ≥ 2</p>' +
-            '<table width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse;font-size:13px;">' +
-            f'<tr style="background:#28a745;color:#ffffff;"><th style="{TH}">Symbol</th><th style="{TH_C}">Score</th><th style="{TH}">Setup</th><th style="{TH}">Entry</th><th style="{TH}">Stop Loss</th><th style="{TH}">T1</th><th style="{TH}">T2</th><th style="{TH_C}">RR</th></tr>' +
-            _er_rows(entry_ready) +
-            '</table></div>'
+        hdr = (
+            f'<tr style="background:#1a7a3a;">'
+            f'<th style="{HEAD}">Symbol</th>'
+            f'<th style="{HEAD_C}">Score</th>'
+            f'<th style="{HEAD}">Setup</th>'
+            f'<th style="{HEAD}">Entry</th>'
+            f'<th style="{HEAD}">Stop Loss</th>'
+            f'<th style="{HEAD}">T1</th>'
+            f'<th style="{HEAD}">T2</th>'
+            f'<th style="{HEAD_C}">RR</th>'
+            f'</tr>'
+        )
+        er_section = _section(
+            title=f"&#9989; Entry-Ready Now &mdash; {len(entry_ready)} stock{'s' if len(entry_ready) > 1 else ''} (Buy Tomorrow)",
+            subtitle="All 5 conditions passed: not extended &middot; RSI in buy zone &middot; volatility contracting &middot; near support &middot; R/R &ge; 2",
+            header_color="#1a7a3a",
+            bg_color="#f2faf2",
+            border_color="#28a745",
+            table_html=_table(hdr, _rows_er(entry_ready)),
         )
 
-    # ── almost-ready section ───────────────────────────────────────────────
     ar_section = ""
     if almost_ready:
-        ar_section = (
-            '<div style="margin:16px 0;padding:14px;background:#fff8dc;border-left:4px solid #ffc107;border-radius:4px;">' +
-            f'<p style="margin:0 0 10px;font-size:15px;font-weight:600;color:#856404;">⚠️ Almost Ready — {len(almost_ready)} stock{"s" if len(almost_ready)>1 else ""} (4/5 conditions)</p>' +
-            '<p style="margin:0 0 12px;font-size:12px;color:#856404;">One condition failing. Could flip to entry-ready tomorrow — keep on watchlist.</p>' +
-            '<table width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse;font-size:13px;">' +
-            f'<tr style="background:#e6a817;color:#ffffff;"><th style="{TH}">Symbol</th><th style="{TH_C}">Score</th><th style="{TH}">Setup</th><th style="{TH}">Entry</th><th style="{TH}">Stop Loss</th><th style="{TH}">T1</th><th style="{TH_C}">RR</th></tr>' +
-            _ar_rows(almost_ready) +
-            '</table></div>'
+        hdr = (
+            f'<tr style="background:#c68b00;">'
+            f'<th style="{HEAD}">Symbol</th>'
+            f'<th style="{HEAD_C}">Score</th>'
+            f'<th style="{HEAD}">Setup</th>'
+            f'<th style="{HEAD}">Entry</th>'
+            f'<th style="{HEAD}">Stop Loss</th>'
+            f'<th style="{HEAD}">T1</th>'
+            f'<th style="{HEAD_C}">RR</th>'
+            f'</tr>'
+        )
+        ar_section = _section(
+            title=f"&#9888;&#65039; Almost Ready &mdash; {len(almost_ready)} stock{'s' if len(almost_ready) > 1 else ''} (4/5 conditions)",
+            subtitle="One condition failing &mdash; could flip to entry-ready tomorrow. Keep on watchlist.",
+            header_color="#c68b00",
+            bg_color="#fffef0",
+            border_color="#e6a000",
+            table_html=_table(hdr, _rows_ar(almost_ready)),
         )
 
-    # ── full table ─────────────────────────────────────────────────────────
+    all_hdr = (
+        f'<tr style="background:#003a7a;">'
+        f'<th style="{HEAD}">Symbol</th>'
+        f'<th style="{HEAD_C}">Score</th>'
+        f'<th style="{HEAD}">Setup</th>'
+        f'<th style="{HEAD_C}">Entry Quality</th>'
+        f'<th style="{HEAD}">Entry</th>'
+        f'<th style="{HEAD}">Stop Loss</th>'
+        f'<th style="{HEAD}">T1</th>'
+        f'<th style="{HEAD_C}">RR</th>'
+        f'</tr>'
+    )
     all_section = (
-        '<p style="margin:20px 0 8px;font-size:14px;font-weight:600;color:#333;">📋 All Setups Today</p>' +
-        '<table width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse;font-size:12px;">' +
-        f'<tr style="background:#004a99;color:#ffffff;"><th style="{TH}">Symbol</th><th style="{TH_C}">Score</th><th style="{TH}">Setup</th><th style="{TH_C}">Entry Quality</th><th style="{TH}">Entry</th><th style="{TH}">Stop Loss</th><th style="{TH}">T1</th><th style="{TH_C}">RR</th></tr>' +
-        _all_rows(by_score) +
-        '</table>'
+        '<p style="font-family:Arial,sans-serif;margin:20px 0 8px;font-size:13px;'
+        'font-weight:700;color:#333;">&#128203; All Setups Today</p>' +
+        _table(all_hdr, _rows_all(by_score))
     )
 
-    html = (
-        '<div style="font-family:Arial,sans-serif;max-width:700px;margin:0 auto;color:#222;">' +
-        # header
-        f'<div style="background:#004a99;color:#ffffff;padding:18px 20px;border-radius:6px 6px 0 0;">' +
-        f'<h2 style="margin:0 0 6px;font-size:20px;">🛡️ NSE Institutional Swing Setups</h2>' +
-        f'<p style="margin:0;font-size:13px;opacity:0.9;">{scan_date} &nbsp;·&nbsp; {len(by_score)} total &nbsp;·&nbsp; ' +
-        f'<strong>{len(entry_ready)} entry-ready ✅</strong> &nbsp;·&nbsp; {len(almost_ready)} almost-ready ⚠️ ' +
-        f'&nbsp;·&nbsp; {elite_count} elite 🔥 &nbsp;·&nbsp; {strong_count} strong ⭐</p></div>' +
-        # disclaimer
-        f'<div style="background:#fff3cd;border-left:4px solid #ffc107;padding:10px 14px;font-size:12px;color:#856404;">' +
-        f'⚠️ <strong>Signals valid for {scan_date} only.</strong> Market conditions change daily. ' +
-        f'Always verify the chart before acting. Not investment advice.</div>' +
-        # body
-        f'<div style="padding:0 4px;">{er_section}{ar_section}{all_section}</div>' +
-        # footer
-        '<p style="font-size:11px;color:#999;padding:14px 4px 4px;">Open SwingScanner dashboard for full score breakdown and all 3 targets.</p>' +
-        '</div>'
-    )
+    # ── assemble full email ────────────────────────────────────────────────
+    html = f"""<!DOCTYPE html>
+<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"></head>
+<body style="margin:0;padding:16px;background:#f4f4f4;">
+<table width="100%" cellpadding="0" cellspacing="0">
+<tr><td align="center">
+<table width="700" cellpadding="0" cellspacing="0"
+  style="max-width:700px;background:#ffffff;border-radius:8px;
+         overflow:hidden;font-family:Arial,sans-serif;color:#222;">
+
+  <!-- HEADER -->
+  <tr>
+    <td style="background:#004a99;padding:18px 20px;border-radius:8px 8px 0 0;">
+      <p style="margin:0 0 6px;font-size:20px;font-weight:700;color:#ffffff;">
+        &#128737;&#65039; NSE Institutional Swing Setups
+      </p>
+      <p style="margin:0;font-size:13px;color:rgba(255,255,255,0.9);">
+        {scan_date} &nbsp;&middot;&nbsp; {len(by_score)} total &nbsp;&middot;&nbsp;
+        <strong>{len(entry_ready)} entry-ready &#9989;</strong>
+        &nbsp;&middot;&nbsp; {len(almost_ready)} almost-ready &#9888;&#65039;
+        &nbsp;&middot;&nbsp; {elite_count} elite &#128293;
+        &nbsp;&middot;&nbsp; {strong_count} strong &#11088;
+      </p>
+    </td>
+  </tr>
+
+  <!-- DISCLAIMER -->
+  <tr>
+    <td style="background:#fff8e1;border-left:4px solid #f0b400;
+               padding:10px 16px;font-size:12px;color:#7a5c00;">
+      &#9888;&#65039; <strong>Signals valid for {scan_date} only.</strong>
+      Market conditions change daily. Always verify the chart before acting.
+      Not investment advice.
+    </td>
+  </tr>
+
+  <!-- BODY -->
+  <tr>
+    <td style="padding:16px 20px;">
+      {er_section}
+      {ar_section}
+      {all_section}
+      <p style="font-size:11px;color:#aaa;margin:20px 0 0;">
+        Open SwingScanner dashboard for full score breakdown and all 3 targets.
+      </p>
+    </td>
+  </tr>
+
+</table>
+</td></tr></table>
+</body></html>"""
 
     msg.attach(MIMEText(html, "html", "utf-8"))
 
