@@ -10,7 +10,6 @@ Two outputs per stock:
 """
 
 import logging
-
 import pandas as pd
 
 logger = logging.getLogger(__name__)
@@ -53,11 +52,13 @@ def _atr(high: pd.Series, low: pd.Series, close: pd.Series, length: int = 14) ->
 # ---------------------------------------------------------------------------
 
 class InstitutionalEngine:
-    def __init__(self, stock_df: pd.DataFrame, market_df: pd.DataFrame, midcap_df: pd.DataFrame):
+    def __init__(self, stock_df: pd.DataFrame, market_df: pd.DataFrame, midcap_df: pd.DataFrame, sector_df: pd.DataFrame | None = None):
         self.df  = stock_df.copy()
         self.mkt = market_df.copy()
         self.mid = midcap_df.copy()
+        self.sec = sector_df.copy() if sector_df is not None else None
         self._indicators_calculated = False
+        self.detected_setup_type = "Base Formation"  # Default saved state
 
     def _calculate_indicators(self, df: pd.DataFrame) -> pd.DataFrame:
         df["ema20"]   = _ema(df["Close"], 20)
@@ -75,18 +76,15 @@ class InstitutionalEngine:
         if not self._indicators_calculated:
             self.df  = self._calculate_indicators(self.df)
             self.mkt = self._calculate_indicators(self.mkt)
+            if self.sec is not None:
+                self.sec = self._calculate_indicators(self.sec)
             self._indicators_calculated = True
 
     # ------------------------------------------------------------------ #
-    #  Score (unchanged)                                                   #
+    #  Score                                                             #
     # ------------------------------------------------------------------ #
 
     def get_contextual_score(self) -> tuple[int, str, str]:
-        """
-        Score 0-100 across 6 components:
-          Trend (30) · Momentum (20) · Volume (20) · Breakout/Setup (20)
-          Market Regime (5) · Relative Strength (5)
-        """
         self._ensure_indicators()
 
         if len(self.df) < 5 or len(self.mkt) < 5:
@@ -155,6 +153,7 @@ class InstitutionalEngine:
                 setup_type = "Pullback to EMA50"
                 explanations.append("Healthy pullback to EMA50")
 
+        self.detected_setup_type = setup_type  # Save state for the entry filter
         explanations.append(f"Setup ({setup_type}): {scores['Breakout']}/20")
 
         # 5. Market regime
@@ -164,41 +163,36 @@ class InstitutionalEngine:
             scores["Market"] += 2
         explanations.append(f"Market regime: {scores['Market']}/5")
 
-        # 6. Relative strength
+        # 6. Relative Strength & Sector Confirmation
         lookback_rs = min(63, len(self.df), len(self.mkt))
         if lookback_rs > 5:
             stock_ret = (self.df["Close"].iloc[-1] / self.df["Close"].iloc[-lookback_rs]) - 1
             mkt_ret   = (self.mkt["Close"].iloc[-1] / self.mkt["Close"].iloc[-lookback_rs]) - 1
+            
+            # Upgrade 2: Sector Strength overlay calculation
+            sector_boost = 0
+            if self.sec is not None and len(self.sec) >= lookback_rs:
+                sec_last = self.sec.iloc[-1]
+                # Check if sector index is healthy
+                if sec_last["Close"] > sec_last["ema200"] and sec_last["rsi"] > 50:
+                    sector_boost = 2
+                    explanations.append("Sector index is structurally strong")
+
             if stock_ret > mkt_ret:
-                scores["RS"] = 5
+                scores["RS"] = 3 + sector_boost
                 explanations.append("RS: outperforming Nifty (63d)")
             else:
-                scores["RS"] = 2
+                scores["RS"] = 1 + sector_boost
                 explanations.append("RS: lagging Nifty (63d)")
 
         total = sum(scores.values())
         return int(total), setup_type, " | ".join(explanations)
 
     # ------------------------------------------------------------------ #
-    #  Entry Quality Filter — "Is this actually buyable tomorrow?"         #
+    #  Entry Quality Filter                                              #
     # ------------------------------------------------------------------ #
 
     def get_entry_quality(self) -> dict:
-        """
-        Checks 5 strict entry conditions. ALL must pass for a stock to be
-        considered enterable tomorrow. Returns a dict with:
-          - entry_ready: bool  — True only if all 5 conditions pass
-          - conditions: dict   — each condition name → (passed: bool, detail: str)
-          - entry_label: str   — human-readable verdict
-          - entry_score: int   — 0-5 (how many conditions passed)
-
-        The 5 conditions:
-          1. NOT EXTENDED  — price ≤ 3% above the nearest key level (EMA20/50 or recent high)
-          2. RSI BUYZONE   — RSI between 45 and 68 (not overbought, not weak)
-          3. ATR TIGHTENING — today's ATR ≤ 110% of the 10-day avg ATR (volatility contracting)
-          4. NEAR SUPPORT  — price within 5% above EMA20 or EMA50 (not in mid-air)
-          5. RISK/REWARD   — potential move to 20-day high ≥ 2× the ATR stop distance
-        """
         self._ensure_indicators()
 
         if len(self.df) < 20:
@@ -215,22 +209,14 @@ class InstitutionalEngine:
         atr     = float(last["atr"])
         ema20   = float(last["ema20"])
         ema50   = float(last["ema50"])
-        vol_sma = float(last["vol_sma"])
 
-        # 10-day average ATR for tightening comparison
         atr_10_avg = float(self.df["atr"].iloc[-11:-1].mean())
-
-        # Nearest key level below price
         key_level = max(ema20, ema50)
-
-        # 20-day high (potential target)
         high_20 = float(self.df["High"].iloc[-20:].max())
 
         conditions: dict[str, tuple[bool, str]] = {}
 
         # ── Condition 1: Not Extended ─────────────────────────────────────
-        # Price should be within 3% above the nearest key level.
-        # If it's run up 10% already, the easy money is gone.
         extension_pct = ((price - key_level) / key_level) * 100 if key_level > 0 else 999
         c1 = extension_pct <= 3.0
         conditions["Not Extended"] = (
@@ -240,8 +226,6 @@ class InstitutionalEngine:
         )
 
         # ── Condition 2: RSI Buy Zone ─────────────────────────────────────
-        # RSI 45-68: strong enough to be in an uptrend, not so hot it's overbought.
-        # Above 68 = extended, risky entry. Below 45 = losing momentum.
         c2 = 45 <= rsi <= 68
         conditions["RSI Buy Zone"] = (
             c2,
@@ -249,8 +233,6 @@ class InstitutionalEngine:
         )
 
         # ── Condition 3: Volatility Tightening ───────────────────────────
-        # ATR contracting means the stock is coiling, not thrashing around.
-        # Breakouts from tight bases have better success rates.
         if atr_10_avg > 0:
             atr_ratio = atr / atr_10_avg
             c3 = atr_ratio <= 1.10
@@ -264,8 +246,6 @@ class InstitutionalEngine:
             conditions["Volatility Tightening"] = (False, "ATR data unavailable")
 
         # ── Condition 4: Near Support ─────────────────────────────────────
-        # Price within 5% above EMA20 or EMA50 = still near the launchpad.
-        # More than 5% above = chasing, stop loss becomes too wide.
         near_ema20 = ((price - ema20) / ema20) * 100 if ema20 > 0 else 999
         near_ema50 = ((price - ema50) / ema50) * 100 if ema50 > 0 else 999
         best_proximity = min(near_ema20, near_ema50)
@@ -276,17 +256,27 @@ class InstitutionalEngine:
             f"Price is {best_proximity:.1f}% above {closer_ema} — limit is 5%"
         )
 
-        # ── Condition 5: Reward/Risk ≥ 2 ─────────────────────────────────
-        # Potential upside (to 20-day high) must be at least 2× the ATR stop.
-        # No point entering if the upside is equal to or less than the risk.
-        stop_distance  = 2.0 * atr                    # our standard 2-ATR stop
-        upside         = high_20 - price
+        # ── Upgrade 1: Dynamic Target Generation ──────────────────────────
+        # Check if setup contains breakout words to determine target upside
+        is_breakout = "Breakout" in self.detected_setup_type
+
+        if is_breakout:
+            # For breakouts, project a standard institutional swing target (3-ATR)
+            # instead of using 20-day high (which would resolve to 0).
+            upside = 3.0 * atr
+            target_description = "3-ATR breakout projection"
+        else:
+            upside = high_20 - price
+            target_description = f"20d high target (₹{high_20:.0f})"
+
+        stop_distance  = 2.0 * atr
         rr_ratio       = upside / stop_distance if stop_distance > 0 else 0
-        c5 = rr_ratio >= 2.0
-        conditions["Risk/Reward ≥ 2"] = (
+        c5 = rr_ratio >= 1.5  # Realistic swing reward-to-risk boundary
+        
+        conditions["Risk/Reward Check"] = (
             c5,
-            f"Upside to 20d high ₹{high_20:.0f} = ₹{upside:.0f} "
-            f"vs 2-ATR stop ₹{stop_distance:.0f} → RR {rr_ratio:.1f}x"
+            f"Upside via {target_description} = ₹{upside:.0f} "
+            f"vs 2-ATR stop ₹{stop_distance:.0f} → RR {rr_ratio:.1f}x (needs ≥1.5x)"
         )
 
         entry_score = sum(1 for passed, _ in conditions.values() if passed)
