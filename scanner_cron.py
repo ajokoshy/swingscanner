@@ -412,7 +412,7 @@ def run_automation() -> None:
                     continue
 
                 df = all_data[ticker_sym].dropna()
-                if len(df) < 150:
+                if len(df) < 250:
                     skipped += 1
                     continue
 
