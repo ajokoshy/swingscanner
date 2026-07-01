@@ -35,6 +35,39 @@ SCORE_THRESHOLD = 70
 FLUSH_EVERY     = 25
 IST_OFFSET_HRS  = 5.5          # UTC + 5:30
 
+# ---------------------------------------------------------------------------
+# Sector Mapping Helpers (Upgrade 2)
+# ---------------------------------------------------------------------------
+
+SECTOR_MAP = {
+    # Banks & Financials
+    "HDFCBANK": "^NSEBANK", "ICICIBANK": "^NSEBANK", "SBIN": "^NSEBANK", 
+    "KOTAKBANK": "^NSEBANK", "AXISBANK": "^NSEBANK", "BAJFINANCE": "^NSEBANK",
+    "BAJAJFINSV": "^NSEBANK", "PFC": "^NSEBANK", "RECLTD": "^NSEBANK",
+    # IT
+    "TCS": "^CNXIT", "INFY": "^CNXIT", "WIPRO": "^CNXIT", "HCLTECH": "^CNXIT",
+    "TECHM": "^CNXIT", "LTIM": "^CNXIT", "COFORGE": "^CNXIT", "PERSISTENT": "^CNXIT",
+    # Auto
+    "TATAMOTORS": "^CNXAUTO", "M&M": "^CNXAUTO", "MARUTI": "^CNXAUTO", 
+    "HEROMOTOCO": "^CNXAUTO", "BAJAJ-AUTO": "^CNXAUTO", "EICHERMOT": "^CNXAUTO",
+    # FMCG
+    "HINDUNILVR": "^CNXFMCG", "ITC": "^CNXFMCG", "NESTLEIND": "^CNXFMCG", 
+    "BRITANNIA": "^CNXFMCG", "DABUR": "^CNXFMCG", "GODREJCP": "^CNXFMCG",
+    # Metal
+    "TATASTEEL": "^CNXMETAL", "JSWSTEEL": "^CNXMETAL", "HINDALCO": "^CNXMETAL", 
+    "VEDL": "^CNXMETAL", "COALINDIA": "^CNXMETAL", "NATIONALUM": "^CNXMETAL",
+    # Pharma
+    "SUNPHARMA": "^CNXPHARMA", "CIPLA": "^CNXPHARMA", "DRREDDY": "^CNXPHARMA", 
+    "DIVISLAB": "^CNXPHARMA", "TORNTPHARM": "^CNXPHARMA", "APOLLOHOSP": "^CNXPHARMA",
+    # Realty
+    "DLF": "^CNXREALTY", "GODREJPROP": "^CNXREALTY", "OBEROIRLTY": "^CNXREALTY", 
+    "PRESTIGE": "^CNXREALTY", "PHOENIXLTD": "^CNXREALTY"
+}
+
+def get_sector_index(symbol: str) -> str | None:
+    """Returns matching sector index or None if no specific sector is mapped"""
+    return SECTOR_MAP.get(symbol)
+
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -108,8 +141,6 @@ def send_email(setups: list, scan_date: date_type) -> None:
     msg["To"]   = receiver_email
 
     # ── style constants ────────────────────────────────────────────────────
-    # Using inline border on every cell (not border-collapse tricks) for
-    # maximum compatibility across Gmail, Outlook, Apple Mail, mobile.
     CELL  = "font-family:Arial,sans-serif;font-size:13px;padding:8px 10px;border:1px solid #d0d0d0;"
     CELL_C = CELL + "text-align:center;"
     CELL_R = CELL + "color:#c0392b;"
@@ -117,7 +148,7 @@ def send_email(setups: list, scan_date: date_type) -> None:
     HEAD  = CELL + "font-weight:700;color:#ffffff;"
     HEAD_C = HEAD + "text-align:center;"
 
-    # ── row builders (use enumerate — NOT .index() which breaks on dupes) ─
+    # ── row builders ──
     def _rows_er(rows: list) -> str:
         out = []
         for i, s in enumerate(rows):
@@ -180,7 +211,6 @@ def send_email(setups: list, scan_date: date_type) -> None:
         return "".join(out)
 
     def _table(header_row: str, body_rows: str) -> str:
-        """Wraps header + rows in a table with no padding/spacing issues."""
         return (
             '<table width="100%" cellpadding="0" cellspacing="0" '
             'style="border-collapse:collapse;table-layout:auto;">'
@@ -188,26 +218,22 @@ def send_email(setups: list, scan_date: date_type) -> None:
             '</table>'
         )
 
-    # ── section builders ───────────────────────────────────────────────────
     def _section(title: str, subtitle: str, header_color: str,
                  bg_color: str, border_color: str, table_html: str) -> str:
         return (
             f'<table width="100%" cellpadding="0" cellspacing="0" style="margin:16px 0;">'
             f'<tr><td style="background:{bg_color};border:2px solid {border_color};'
             f'border-radius:6px;padding:0;overflow:hidden;">'
-            # title bar
             f'<table width="100%" cellpadding="0" cellspacing="0">'
             f'<tr><td style="background:{border_color};padding:12px 14px;">'
             f'<p style="margin:0;font-size:14px;font-weight:700;color:#ffffff;">{title}</p>'
             f'<p style="margin:4px 0 0;font-size:11px;color:rgba(255,255,255,0.85);">{subtitle}</p>'
             f'</td></tr>'
-            # table
             f'<tr><td style="padding:12px 14px;">{table_html}</td></tr>'
             f'</table>'
             f'</td></tr></table>'
         )
 
-    # ── build sections ─────────────────────────────────────────────────────
     er_section = ""
     if entry_ready:
         hdr = (
@@ -271,7 +297,7 @@ def send_email(setups: list, scan_date: date_type) -> None:
         _table(all_hdr, _rows_all(by_score))
     )
 
-    # ── assemble full email ────────────────────────────────────────────────
+    # ── assemble full email ──
     html = f"""<!DOCTYPE html>
 <html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"></head>
 <body style="margin:0;padding:16px;background:#f4f4f4;">
@@ -334,7 +360,6 @@ def send_email(setups: list, scan_date: date_type) -> None:
         logger.error("❌ Email failed: %s", exc)
 
 
-
 # ---------------------------------------------------------------------------
 # Main scan routine
 # ---------------------------------------------------------------------------
@@ -387,6 +412,18 @@ def run_automation() -> None:
             logger.warning("MidCap index unavailable — using Nifty as proxy.")
             mid_df = mkt_df
 
+        # Upgrade 2: Pre-fetch standard sectoral indices
+        logger.info("Pre-fetching Sectoral Indices...")
+        sector_indices = ["^NSEBANK", "^CNXIT", "^CNXAUTO", "^CNXFMCG", "^CNXMETAL", "^CNXPHARMA", "^CNXREALTY"]
+        sector_data_cache = {}
+        for index_sym in sector_indices:
+            try:
+                sec_df = DataPipeline.fetch_market_data(index_sym)
+                if sec_df is not None and not sec_df.empty:
+                    sector_data_cache[index_sym] = sec_df
+            except Exception as e:
+                logger.warning("Could not pre-fetch sector index %s: %s", index_sym, e)
+
         # ── 6. Batch fetch stock data ─────────────────────────────────────
         logger.info("Starting batch data fetch...")
         all_data = DataPipeline.fetch_batch_data(symbols)
@@ -416,7 +453,12 @@ def run_automation() -> None:
                     skipped += 1
                     continue
 
-                engine = InstitutionalEngine(df, mkt_df, mid_df)
+                # Upgrade 2: Retrieve the corresponding sectoral dataframe if mapped
+                sector_idx_symbol = get_sector_index(sym)
+                sector_df = sector_data_cache.get(sector_idx_symbol) if sector_idx_symbol else None
+
+                # Pass sectoral context to the engine
+                engine = InstitutionalEngine(df, mkt_df, mid_df, sector_df=sector_df)
                 score, setup_type, explanation = engine.get_contextual_score()
                 analysed += 1
 
