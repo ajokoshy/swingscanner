@@ -304,7 +304,7 @@ try:
             selected_type = st.selectbox("Filter by setup", ["All"] + setup_types)
         with fc2:
             regime_types    = sorted({r["market_regime"] for r in rows})
-            selected_regime = st.selectbox("Filter by regime", ["All"] + regime_regime) if 'regime_regime' in locals() else st.selectbox("Filter by regime", ["All"] + regime_types)
+            selected_regime = st.selectbox("Filter by regime", ["All"] + regime_types)
         with fc3:
             entry_filter = st.selectbox(
                 "Filter by entry",
