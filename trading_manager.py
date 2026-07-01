@@ -50,13 +50,15 @@ class RiskManager:
         price = float(last["Close"])
         atr   = float(last["atr"])
 
-        if atr <= 0 or pd.isna(atr):
+        # Prevent processing for zero-volatility or penny stocks under 1 Rupee
+        if atr <= 0.01 or pd.isna(atr) or price <= 1.0:
             return None
 
         stop_loss = price - (2.0 * atr)
         risk      = price - stop_loss
 
-        if risk <= 0:
+        # Ensure stop loss is mathematically logical and positive
+        if risk <= 0.01 or stop_loss <= 0:
             return None
 
         t1 = price + (risk * 2.0)
