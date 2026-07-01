@@ -462,7 +462,7 @@ class DataPipeline:
     def fetch_batch_data(cls, symbols: list[str]) -> pd.DataFrame | None:
         """
         Batch fetch for all symbols.
-        Tries: yfinance+cffi batch → yahooquery batch → symbol-by-symbol bhavcopy.
+        Tries: yfinance+cffi batch → yahooquery batch → single-pass optimized Bhavcopy read.
 
         Returns a MultiIndex DataFrame compatible with the existing scanner loop:
             all_data[f"{sym}.NS"]  →  OHLCV DataFrame
@@ -490,13 +490,44 @@ class DataPipeline:
             if coverage >= 0.30:
                 return data
 
-        # ── Source 3: Bhavcopy symbol-by-symbol ──────────────────────────
-        logger.info("Batch fetch: falling back to Bhavcopy cache...")
+        # ── Source 3: Bhavcopy optimized batch read ───────────────────────
+        logger.info("Batch fetch: falling back to Bhavcopy cache (optimized batch read)...")
+        stems = sorted({p.stem for p in BHAVCOPY_CACHE_DIR.glob("*.parquet")} |
+                       {p.stem for p in BHAVCOPY_CACHE_DIR.glob("*.csv")})
+
+        if not stems:
+            logger.error("No Bhavcopy cache files found.")
+            return None
+
+        logger.info("Loading %d daily Bhavcopy files into memory...", len(stems))
+        daily_dfs = []
+        for stem in stems:
+            day_df = _cache_read(stem)
+            if day_df is not None:
+                daily_dfs.append(day_df)
+
+        if not daily_dfs:
+            logger.error("Could not load any daily Bhavcopy files from cache.")
+            return None
+
+        master_df = pd.concat(daily_dfs, ignore_index=True)
+        master_df["Date"] = pd.to_datetime(master_df["Date"])
+        master_df["Symbol"] = master_df["Symbol"].str.strip()
+
+        # Group and map to the target multi-index format
         frames: dict[str, pd.DataFrame] = {}
-        for sym in symbols:
-            df = _fetch_from_bhavcopy(sym)
-            if df is not None and not df.empty:
-                frames[f"{sym}.NS"] = df
+        clean_symbols = [s.strip() for s in symbols]
+        
+        for sym in clean_symbols:
+            sym_data = master_df[master_df["Symbol"] == sym]
+            if not sym_data.empty:
+                sym_data = sym_data.sort_values("Date").set_index("Date")
+                for col in ["Open", "High", "Low", "Close", "Volume"]:
+                    sym_data[col] = pd.to_numeric(sym_data[col], errors="coerce")
+                
+                clean_df = sym_data[["Open", "High", "Low", "Close", "Volume"]].dropna(subset=["Close"])
+                if len(clean_df) > 20:
+                    frames[f"{sym}.NS"] = clean_df
 
         if frames:
             logger.info("Bhavcopy: recovered %d/%d symbols.", len(frames), len(symbols))
