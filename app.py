@@ -171,32 +171,41 @@ with st.sidebar.expander("🗑️ Clean Up Old Data"):
     now_ist_cleanup = datetime.now(timezone.utc) + IST_OFFSET
     today_cleanup   = now_ist_cleanup.date()
 
-    with db_engine.connect() as conn:
-        old_count = conn.execute(
-            text("SELECT COUNT(*) AS c FROM pro_scans_v2 WHERE scan_date < :d"),
-            {"d": today_cleanup},
-        ).mappings().first()["c"]
+    # Defer query execution behind an on-demand button click
+    if "old_count" not in st.session_state:
+        st.session_state.old_count = None
 
-    if old_count == 0:
-        st.caption("No rows older than today. Nothing to clean up.")
+    if st.button("🔍 Scan for Old Records", use_container_width=True):
+        with db_engine.connect() as conn:
+            st.session_state.old_count = conn.execute(
+                text("SELECT COUNT(*) AS c FROM pro_scans_v2 WHERE scan_date < :d"),
+                {"d": today_cleanup},
+            ).mappings().first()["c"]
+
+    if st.session_state.old_count is not None:
+        if st.session_state.old_count == 0:
+            st.success("No rows older than today. Nothing to clean up.")
+        else:
+            st.warning(f"Found **{st.session_state.old_count}** historical rows.")
+            st.caption("This permanently deletes them. Today's data is never touched.")
+
+            confirm = st.checkbox(f"Yes, delete all {st.session_state.old_count} old rows", key="confirm_cleanup")
+
+            if st.button("🗑️ Delete Old Entries", disabled=not confirm, use_container_width=True):
+                with db_engine.connect() as conn:
+                    result = conn.execute(
+                        text("DELETE FROM pro_scans_v2 WHERE scan_date < :d"),
+                        {"d": today_cleanup},
+                    )
+                    conn.commit()
+                    deleted = result.rowcount
+                st.success(f"✅ Deleted {deleted} rows older than {today_cleanup}.")
+                st.session_state.old_count = None
+                st.session_state.pop("confirm_cleanup", None)
+                time.sleep(1.5)
+                st.rerun()
     else:
-        st.write(f"**{old_count}** rows from before today ({today_cleanup}) exist.")
-        st.caption("This permanently deletes them. Today's data is never touched.")
-
-        confirm = st.checkbox(f"Yes, delete all {old_count} old rows", key="confirm_cleanup")
-
-        if st.button("🗑️ Delete Old Entries", disabled=not confirm, use_container_width=True):
-            with db_engine.connect() as conn:
-                result = conn.execute(
-                    text("DELETE FROM pro_scans_v2 WHERE scan_date < :d"),
-                    {"d": today_cleanup},
-                )
-                conn.commit()
-                deleted = result.rowcount
-            st.success(f"✅ Deleted {deleted} rows older than {today_cleanup}.")
-            st.session_state.pop("confirm_cleanup", None)
-            time.sleep(1.5)
-            st.rerun()
+        st.caption("Click the button above to scan for deletable database records.")
 
 # ---------------------------------------------------------------------------
 # Main dashboard
@@ -295,7 +304,7 @@ try:
             selected_type = st.selectbox("Filter by setup", ["All"] + setup_types)
         with fc2:
             regime_types    = sorted({r["market_regime"] for r in rows})
-            selected_regime = st.selectbox("Filter by regime", ["All"] + regime_types)
+            selected_regime = st.selectbox("Filter by regime", ["All"] + regime_regime) if 'regime_regime' in locals() else st.selectbox("Filter by regime", ["All"] + regime_types)
         with fc3:
             entry_filter = st.selectbox(
                 "Filter by entry",
